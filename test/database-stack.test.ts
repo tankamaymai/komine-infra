@@ -12,6 +12,8 @@ const testConfig: EnvironmentConfig = {
   dbAllocatedStorage: 20,
   backendDesiredCount: 1,
   frontendDesiredCount: 1,
+  githubOwner: 'test-owner',
+  githubRepos: { backend: 'test-backend', frontend: 'test-frontend' },
 };
 
 describe('DatabaseStack', () => {

@@ -18,6 +18,13 @@ export interface EnvironmentConfig {
   readonly frontendDesiredCount: number;
   /** Custom domain name (optional) */
   readonly domainName?: string;
+  /** GitHub organization/owner for OIDC trust */
+  readonly githubOwner: string;
+  /** GitHub repository names for OIDC trust */
+  readonly githubRepos: {
+    readonly backend: string;
+    readonly frontend: string;
+  };
 }
 
 export const prodConfig: EnvironmentConfig = {
@@ -28,4 +35,9 @@ export const prodConfig: EnvironmentConfig = {
   dbAllocatedStorage: 20,
   backendDesiredCount: 1,
   frontendDesiredCount: 1,
+  githubOwner: 'tankamaymai',
+  githubRepos: {
+    backend: 'komine--cemetery-crm-backend',
+    frontend: 'komine-frontend-crm-v2',
+  },
 };

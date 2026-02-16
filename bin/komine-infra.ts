@@ -5,6 +5,7 @@ import { DatabaseStack } from '../lib/database-stack';
 import { StorageStack } from '../lib/storage-stack';
 import { BackendStack } from '../lib/backend-stack';
 import { FrontendStack } from '../lib/frontend-stack';
+import { CicdStack } from '../lib/cicd-stack';
 import { prodConfig } from '../lib/config';
 
 const app = new cdk.App();
@@ -54,5 +55,19 @@ const frontendStack = new FrontendStack(app, 'KomineFrontendStack', {
 });
 frontendStack.addDependency(vpcStack);
 frontendStack.addDependency(backendStack);
+
+// Phase 5: CI/CD
+const cicdStack = new CicdStack(app, 'KomineCicdStack', {
+  env,
+  config: prodConfig,
+  backendEcrArn: backendStack.ecrRepository.repositoryArn,
+  frontendEcrArn: frontendStack.ecrRepository.repositoryArn,
+  ecsClusterArn: backendStack.ecsCluster.clusterArn,
+  backendServiceArn: backendStack.backendService.serviceArn,
+  frontendServiceArn: frontendStack.frontendService.serviceArn,
+  cloudFrontDistributionArn: `arn:aws:cloudfront::${prodConfig.account}:distribution/${frontendStack.distribution.distributionId}`,
+});
+cicdStack.addDependency(backendStack);
+cicdStack.addDependency(frontendStack);
 
 app.synth();

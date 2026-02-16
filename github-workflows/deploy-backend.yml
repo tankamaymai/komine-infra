@@ -1,0 +1,126 @@
+# Copy this file to komine--cemetery-crm-backend/.github/workflows/deploy.yml
+#
+# Required GitHub Actions secrets (set via repo Settings > Secrets):
+#   AWS_ACCOUNT_ID    - AWS Account ID
+#   AWS_REGION        - AWS Region (ap-northeast-1)
+#   SUPABASE_URL      - Supabase project URL
+#   SUPABASE_SERVICE_ROLE_KEY - Supabase service role key
+
+name: Deploy Backend
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: ap-northeast-1
+  ECR_REPOSITORY: komine-crm-backend
+  ECS_CLUSTER: komine-crm-cluster
+  ECS_SERVICE: komine-crm-backend
+  TASK_FAMILY: komine-crm-backend
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+
+  deploy:
+    name: Deploy
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/komine-crm-github-actions-deploy
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push Docker image
+        id: build
+        env:
+          ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -t $ECR_REGISTRY/$ECR_REPOSITORY:latest .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+      - name: Download current task definition
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition $TASK_FAMILY \
+            --query 'taskDefinition' \
+            --output json > task-definition.json
+
+      - name: Update task definition with new image
+        id: task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-definition.json
+          container-name: backend
+          image: ${{ steps.build.outputs.image }}
+
+      - name: Run database migration
+        env:
+          ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          TASK_ARN=$(aws ecs run-task \
+            --cluster $ECS_CLUSTER \
+            --task-definition $TASK_FAMILY \
+            --launch-type FARGATE \
+            --network-configuration "$(aws ecs describe-services \
+              --cluster $ECS_CLUSTER \
+              --services $ECS_SERVICE \
+              --query 'services[0].networkConfiguration' \
+              --output json)" \
+            --overrides '{
+              "containerOverrides": [{
+                "name": "backend",
+                "command": ["npx", "prisma", "migrate", "deploy"]
+              }]
+            }' \
+            --query 'tasks[0].taskArn' \
+            --output text)
+          echo "Waiting for migration task: $TASK_ARN"
+          aws ecs wait tasks-stopped --cluster $ECS_CLUSTER --tasks "$TASK_ARN"
+          EXIT_CODE=$(aws ecs describe-tasks \
+            --cluster $ECS_CLUSTER \
+            --tasks "$TASK_ARN" \
+            --query 'tasks[0].containers[0].exitCode' \
+            --output text)
+          if [ "$EXIT_CODE" != "0" ]; then
+            echo "Migration failed with exit code: $EXIT_CODE"
+            exit 1
+          fi
+          echo "Migration completed successfully"
+
+      - name: Deploy to ECS
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.task-def.outputs.task-definition }}
+          service: ${{ env.ECS_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true
+          wait-for-minutes: 10
