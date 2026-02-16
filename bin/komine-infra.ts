@@ -3,6 +3,7 @@ import * as cdk from 'aws-cdk-lib/core';
 import { VpcStack } from '../lib/vpc-stack';
 import { DatabaseStack } from '../lib/database-stack';
 import { StorageStack } from '../lib/storage-stack';
+import { BackendStack } from '../lib/backend-stack';
 import { prodConfig } from '../lib/config';
 
 const app = new cdk.App();
@@ -26,16 +27,19 @@ databaseStack.addDependency(vpcStack);
 
 const storageStack = new StorageStack(app, 'KomineStorageStack', { env });
 
-// Phase 3: Backend (uncomment when ready)
-// const backendStack = new BackendStack(app, 'KomineBackendStack', {
-//   env,
-//   config: prodConfig,
-//   vpc: vpcStack.vpc,
-//   albSecurityGroup: vpcStack.albSecurityGroup,
-//   backendSecurityGroup: vpcStack.backendSecurityGroup,
-//   databaseSecret: databaseStack.databaseSecret,
-//   documentsBucket: storageStack.documentsBucket,
-// });
+// Phase 3: Backend
+const backendStack = new BackendStack(app, 'KomineBackendStack', {
+  env,
+  config: prodConfig,
+  vpc: vpcStack.vpc,
+  albSecurityGroup: vpcStack.albSecurityGroup,
+  backendSecurityGroup: vpcStack.backendSecurityGroup,
+  databaseSecret: databaseStack.databaseSecret,
+  documentsBucket: storageStack.documentsBucket,
+});
+backendStack.addDependency(vpcStack);
+backendStack.addDependency(databaseStack);
+backendStack.addDependency(storageStack);
 
 // Phase 4: Frontend (uncomment when ready)
 // const frontendStack = new FrontendStack(app, 'KomineFrontendStack', {
@@ -44,7 +48,7 @@ const storageStack = new StorageStack(app, 'KomineStorageStack', { env });
 //   vpc: vpcStack.vpc,
 //   albSecurityGroup: vpcStack.albSecurityGroup,
 //   frontendSecurityGroup: vpcStack.frontendSecurityGroup,
-//   backendService: backendStack.backendService,
+//   backendAlb: backendStack.alb,
 // });
 
 app.synth();

@@ -12,13 +12,14 @@ komine-infra/
 │   ├── vpc-stack.ts          # Phase 1: VPC, Subnets, NAT, Security Groups
 │   ├── database-stack.ts     # Phase 2: RDS PostgreSQL + Secrets Manager
 │   ├── storage-stack.ts      # Phase 2: S3 buckets
-│   ├── backend-stack.ts      # Phase 3: ECR + ECS Fargate + ALB (planned)
+│   ├── backend-stack.ts      # Phase 3: ECR + ECS Fargate + ALB
 │   ├── frontend-stack.ts     # Phase 4: ECR + ECS Fargate + CloudFront (planned)
 │   └── pipeline-stack.ts     # Phase 5: CI/CD pipeline (planned)
 ├── test/
 │   ├── komine-infra.test.ts  # VPC Stack tests
 │   ├── database-stack.test.ts # Database Stack tests
-│   └── storage-stack.test.ts  # Storage Stack tests
+│   ├── storage-stack.test.ts  # Storage Stack tests
+│   └── backend-stack.test.ts  # Backend Stack tests
 ├── cdk.json                  # CDK configuration + feature flags
 ├── jest.config.js            # Jest configuration (ts-jest)
 └── tsconfig.json             # TypeScript configuration (commonjs)
@@ -41,7 +42,7 @@ npx cdk destroy      # Remove deployed stack
 KomineVpcStack        → VPC, Subnets (2 AZ), NAT Gateway, Security Groups
 KomineDatabaseStack   → RDS PostgreSQL 16, Secrets Manager, Parameter Group
 KomineStorageStack    → S3 bucket (documents), lifecycle rules, versioning
-KomineBackendStack    → ECR, ECS Fargate, ALB for backend (planned)
+KomineBackendStack    → ECR, ECS Cluster, Fargate Service, ALB, Auto Scaling
 KomineFrontendStack   → ECR, ECS Fargate, CloudFront for frontend (planned)
 KominePipelineStack   → CI/CD pipeline (planned)
 ```
