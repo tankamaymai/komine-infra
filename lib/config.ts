@@ -24,7 +24,7 @@ export const prodConfig: EnvironmentConfig = {
   account: process.env.CDK_DEFAULT_ACCOUNT!,
   region: 'ap-northeast-1',
   vpcCidr: '10.0.0.0/16',
-  dbInstanceClass: 'db.t4g.micro',
+  dbInstanceClass: 't4g.micro',
   dbAllocatedStorage: 20,
   backendDesiredCount: 1,
   frontendDesiredCount: 1,

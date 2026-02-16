@@ -7,7 +7,7 @@ const testConfig: EnvironmentConfig = {
   account: '123456789012',
   region: 'ap-northeast-1',
   vpcCidr: '10.0.0.0/16',
-  dbInstanceClass: 'db.t4g.micro',
+  dbInstanceClass: 't4g.micro',
   dbAllocatedStorage: 20,
   backendDesiredCount: 1,
   frontendDesiredCount: 1,
