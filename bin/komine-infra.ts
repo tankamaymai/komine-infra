@@ -4,6 +4,7 @@ import { VpcStack } from '../lib/vpc-stack';
 import { DatabaseStack } from '../lib/database-stack';
 import { StorageStack } from '../lib/storage-stack';
 import { BackendStack } from '../lib/backend-stack';
+import { FrontendStack } from '../lib/frontend-stack';
 import { prodConfig } from '../lib/config';
 
 const app = new cdk.App();
@@ -41,14 +42,17 @@ backendStack.addDependency(vpcStack);
 backendStack.addDependency(databaseStack);
 backendStack.addDependency(storageStack);
 
-// Phase 4: Frontend (uncomment when ready)
-// const frontendStack = new FrontendStack(app, 'KomineFrontendStack', {
-//   env,
-//   config: prodConfig,
-//   vpc: vpcStack.vpc,
-//   albSecurityGroup: vpcStack.albSecurityGroup,
-//   frontendSecurityGroup: vpcStack.frontendSecurityGroup,
-//   backendAlb: backendStack.alb,
-// });
+// Phase 4: Frontend + CloudFront
+const frontendStack = new FrontendStack(app, 'KomineFrontendStack', {
+  env,
+  config: prodConfig,
+  vpc: vpcStack.vpc,
+  ecsCluster: backendStack.ecsCluster,
+  frontendSecurityGroup: vpcStack.frontendSecurityGroup,
+  albSecurityGroup: vpcStack.albSecurityGroup,
+  backendAlb: backendStack.alb,
+});
+frontendStack.addDependency(vpcStack);
+frontendStack.addDependency(backendStack);
 
 app.synth();
