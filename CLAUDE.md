@@ -1,6 +1,6 @@
 # CLAUDE.md — komine-infra
 
-AWS CDK (TypeScript) による小峰霊園CRMのインフラストラクチャ定義。
+AWS CDK (TypeScript) による小嶺霊園CRMのインフラストラクチャ定義。
 
 ## Project Structure
 
