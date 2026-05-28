@@ -10,6 +10,7 @@ const testConfig: EnvironmentConfig = {
   vpcCidr: '10.0.0.0/16',
   dbInstanceClass: 't4g.micro',
   dbAllocatedStorage: 20,
+  dbMultiAz: true,
   backendDesiredCount: 1,
   frontendDesiredCount: 1,
   githubOwner: 'test-owner',
@@ -47,11 +48,31 @@ describe('DatabaseStack', () => {
       DBInstanceClass: 'db.t4g.micro',
       AllocatedStorage: '20',
       StorageType: 'gp3',
-      MultiAZ: false,
+      MultiAZ: true,
       DeletionProtection: true,
       StorageEncrypted: true,
       BackupRetentionPeriod: 7,
       DBName: 'komine_cemetery_crm',
+      PreferredMaintenanceWindow: 'sun:18:00-sun:19:00',
+    });
+  });
+
+  test('honors dbMultiAz=false when explicitly disabled', () => {
+    const app = new cdk.App();
+    const env = { account: testConfig.account, region: testConfig.region };
+    const vpcStack = new cdk.Stack(app, 'AltVpcStack', { env });
+    const vpc = new ec2.Vpc(vpcStack, 'Vpc', { maxAzs: 2 });
+    const sg = new ec2.SecurityGroup(vpcStack, 'DbSg', { vpc, description: 'Test DB SG' });
+
+    const stack = new DatabaseStack(app, 'AltDatabaseStack', {
+      env,
+      config: { ...testConfig, dbMultiAz: false },
+      vpc,
+      databaseSecurityGroup: sg,
+    });
+    const altTemplate = Template.fromStack(stack);
+    altTemplate.hasResourceProperties('AWS::RDS::DBInstance', {
+      MultiAZ: false,
     });
   });
 

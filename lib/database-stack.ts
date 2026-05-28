@@ -52,7 +52,11 @@ export class DatabaseStack extends cdk.Stack {
       allocatedStorage: config.dbAllocatedStorage,
       maxAllocatedStorage: config.dbAllocatedStorage * 2,
       storageType: rds.StorageType.GP3,
-      multiAz: false,
+      // #7: HA 最優先方針。config.dbMultiAz で切替可だが本番は常に true。
+      multiAz: config.dbMultiAz,
+      // メンテナンス窓は UTC 指定。`sun:18:00-sun:19:00 UTC` = 月曜 03:00-04:00 JST
+      // （霊園の業務時間外・最オフピーク帯）。
+      preferredMaintenanceWindow: 'sun:18:00-sun:19:00',
       backupRetention: cdk.Duration.days(7),
       deletionProtection: true,
       removalPolicy: cdk.RemovalPolicy.SNAPSHOT,

@@ -9,6 +9,7 @@ const testConfig: EnvironmentConfig = {
   vpcCidr: '10.0.0.0/16',
   dbInstanceClass: 't4g.micro',
   dbAllocatedStorage: 20,
+  dbMultiAz: false,
   backendDesiredCount: 1,
   frontendDesiredCount: 1,
   githubOwner: 'test-owner',

@@ -7,10 +7,11 @@ node_modules
 .cdk.staging
 cdk.out
 
-# IDE
+# IDE / agent tooling
 .idea
 .vscode
 *.swp
+.claude/
 
 # OS
 .DS_Store
