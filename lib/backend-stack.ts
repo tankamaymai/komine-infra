@@ -3,6 +3,7 @@ import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as ecs from 'aws-cdk-lib/aws-ecs';
 import * as ecr from 'aws-cdk-lib/aws-ecr';
 import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
+import * as iam from 'aws-cdk-lib/aws-iam';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
@@ -34,6 +35,10 @@ export class BackendStack extends cdk.Stack {
   public readonly ecsCluster: ecs.Cluster;
   public readonly backendService: ecs.FargateService;
   public readonly alb: elbv2.ApplicationLoadBalancer;
+  /** ECS task role (#11: PassRole 制限のため CicdStack に渡す) */
+  public readonly taskRole: iam.IRole;
+  /** ECS task execution role (#11: PassRole 制限のため CicdStack に渡す) */
+  public readonly executionRole: iam.IRole;
 
   constructor(scope: Construct, id: string, props: BackendStackProps) {
     super(scope, id, props);
@@ -106,6 +111,10 @@ export class BackendStack extends cdk.Stack {
 
     // Grant S3 access to the task role
     documentsBucket.grantReadWrite(taskDefinition.taskRole);
+
+    // Expose task / execution role for CicdStack PassRole scoping (#11)
+    this.taskRole = taskDefinition.taskRole;
+    this.executionRole = taskDefinition.obtainExecutionRole();
 
     // Fargate Service
     this.backendService = new ecs.FargateService(this, 'BackendService', {

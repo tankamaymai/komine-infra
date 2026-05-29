@@ -6,6 +6,8 @@ import { StorageStack } from '../lib/storage-stack';
 import { BackendStack } from '../lib/backend-stack';
 import { FrontendStack } from '../lib/frontend-stack';
 import { CicdStack } from '../lib/cicd-stack';
+import { SecurityStack } from '../lib/security-stack';
+import { SecretsRotationStack } from '../lib/secrets-rotation-stack';
 import {
   BackupStack,
   BackupSecondaryVaultStack,
@@ -29,6 +31,7 @@ const databaseStack = new DatabaseStack(app, 'KomineDatabaseStack', {
   config: prodConfig,
   vpc: vpcStack.vpc,
   databaseSecurityGroup: vpcStack.databaseSecurityGroup,
+  secretsRotationSecurityGroup: vpcStack.secretsRotationSecurityGroup,
 });
 databaseStack.addDependency(vpcStack);
 
@@ -93,8 +96,28 @@ const cicdStack = new CicdStack(app, 'KomineCicdStack', {
   backendServiceArn: backendStack.backendService.serviceArn,
   frontendServiceArn: frontendStack.frontendService.serviceArn,
   cloudFrontDistributionArn: `arn:aws:cloudfront::${prodConfig.account}:distribution/${frontendStack.distribution.distributionId}`,
+  backendTaskRoleArn: backendStack.taskRole.roleArn,
+  backendExecutionRoleArn: backendStack.executionRole.roleArn,
+  frontendTaskRoleArn: frontendStack.taskRole.roleArn,
+  frontendExecutionRoleArn: frontendStack.executionRole.roleArn,
 });
 cicdStack.addDependency(backendStack);
 cicdStack.addDependency(frontendStack);
+
+// Phase 6: Security audit (CloudTrail + GuardDuty)
+new SecurityStack(app, 'KomineSecurityStack', { env });
+
+// Phase 7: Secrets Manager rotation (DB credentials, 30-day cycle)
+// 専用 stack で持つことで DatabaseStack 内部での addRotationSingleUser がもたらす
+// VpcStack ↔ DatabaseStack の循環参照を回避する。詳細は lib/secrets-rotation-stack.ts。
+const secretsRotationStack = new SecretsRotationStack(app, 'KomineSecretsRotationStack', {
+  env,
+  vpc: vpcStack.vpc,
+  secretsRotationSecurityGroup: vpcStack.secretsRotationSecurityGroup,
+  databaseSecret: databaseStack.databaseSecret,
+  databaseInstanceIdentifier: databaseStack.databaseInstance.instanceIdentifier,
+});
+secretsRotationStack.addDependency(vpcStack);
+secretsRotationStack.addDependency(databaseStack);
 
 app.synth();

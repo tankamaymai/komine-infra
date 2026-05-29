@@ -34,6 +34,10 @@ describe('CicdStack', () => {
       backendServiceArn: 'arn:aws:ecs:ap-northeast-1:123456789012:service/komine-crm-cluster/komine-crm-backend',
       frontendServiceArn: 'arn:aws:ecs:ap-northeast-1:123456789012:service/komine-crm-cluster/komine-crm-frontend',
       cloudFrontDistributionArn: 'arn:aws:cloudfront::123456789012:distribution/E1234567890',
+      backendTaskRoleArn: 'arn:aws:iam::123456789012:role/komine-backend-task-role',
+      backendExecutionRoleArn: 'arn:aws:iam::123456789012:role/komine-backend-execution-role',
+      frontendTaskRoleArn: 'arn:aws:iam::123456789012:role/komine-frontend-task-role',
+      frontendExecutionRoleArn: 'arn:aws:iam::123456789012:role/komine-frontend-execution-role',
     });
     template = Template.fromStack(stack);
   });
@@ -101,17 +105,52 @@ describe('CicdStack', () => {
     });
   });
 
-  test('deploy role has ECS update service permissions', () => {
+  test('deploy role has ECS UpdateService scoped to specific service ARNs', () => {
     template.hasResourceProperties('AWS::IAM::Policy', {
       PolicyDocument: Match.objectLike({
         Statement: Match.arrayWith([
           Match.objectLike({
             Sid: 'EcsUpdateService',
             Effect: 'Allow',
-            Action: Match.arrayWith([
-              'ecs:UpdateService',
-              'ecs:RegisterTaskDefinition',
+            Action: Match.arrayWith(['ecs:UpdateService', 'ecs:DescribeServices']),
+            Resource: Match.arrayWith([
+              'arn:aws:ecs:ap-northeast-1:123456789012:service/komine-crm-cluster/komine-crm-backend',
+              'arn:aws:ecs:ap-northeast-1:123456789012:service/komine-crm-cluster/komine-crm-frontend',
             ]),
+          }),
+        ]),
+      }),
+    });
+  });
+
+  test('deploy role keeps wildcard for ECS task definition management (AWS limitation)', () => {
+    template.hasResourceProperties('AWS::IAM::Policy', {
+      PolicyDocument: Match.objectLike({
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Sid: 'EcsTaskDefinitionManagement',
+            Effect: 'Allow',
+            Action: Match.arrayWith(['ecs:RegisterTaskDefinition', 'ecs:DeregisterTaskDefinition']),
+            Resource: '*',
+          }),
+        ]),
+      }),
+    });
+  });
+
+  test('deploy role has ECS ListTasks/DescribeTasks scoped by cluster condition', () => {
+    template.hasResourceProperties('AWS::IAM::Policy', {
+      PolicyDocument: Match.objectLike({
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Sid: 'EcsListAndDescribeTasks',
+            Effect: 'Allow',
+            Action: Match.arrayWith(['ecs:ListTasks', 'ecs:DescribeTasks']),
+            Condition: Match.objectLike({
+              ArnEquals: {
+                'ecs:cluster': 'arn:aws:ecs:ap-northeast-1:123456789012:cluster/komine-crm-cluster',
+              },
+            }),
           }),
         ]),
       }),
@@ -154,7 +193,7 @@ describe('CicdStack', () => {
     });
   });
 
-  test('deploy role has IAM PassRole for ECS tasks', () => {
+  test('deploy role has IAM PassRole scoped to the 4 ECS task/execution role ARNs', () => {
     template.hasResourceProperties('AWS::IAM::Policy', {
       PolicyDocument: Match.objectLike({
         Statement: Match.arrayWith([
@@ -162,11 +201,31 @@ describe('CicdStack', () => {
             Sid: 'PassRole',
             Effect: 'Allow',
             Action: 'iam:PassRole',
+            Resource: Match.arrayWith([
+              'arn:aws:iam::123456789012:role/komine-backend-task-role',
+              'arn:aws:iam::123456789012:role/komine-backend-execution-role',
+              'arn:aws:iam::123456789012:role/komine-frontend-task-role',
+              'arn:aws:iam::123456789012:role/komine-frontend-execution-role',
+            ]),
             Condition: Match.objectLike({
-              StringLike: {
+              StringEquals: {
                 'iam:PassedToService': 'ecs-tasks.amazonaws.com',
               },
             }),
+          }),
+        ]),
+      }),
+    });
+  });
+
+  test('ELB waiter is scoped narrowly (DescribeTargetHealth only)', () => {
+    template.hasResourceProperties('AWS::IAM::Policy', {
+      PolicyDocument: Match.objectLike({
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Sid: 'ElbWaiter',
+            Effect: 'Allow',
+            Action: 'elasticloadbalancing:DescribeTargetHealth',
           }),
         ]),
       }),

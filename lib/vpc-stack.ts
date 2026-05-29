@@ -1,5 +1,6 @@
 import * as cdk from 'aws-cdk-lib/core';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import * as logs from 'aws-cdk-lib/aws-logs';
 import { Construct } from 'constructs';
 import { EnvironmentConfig } from './config';
 
@@ -23,6 +24,12 @@ export class VpcStack extends cdk.Stack {
   public readonly backendSecurityGroup: ec2.SecurityGroup;
   public readonly frontendSecurityGroup: ec2.SecurityGroup;
   public readonly databaseSecurityGroup: ec2.SecurityGroup;
+  /**
+   * Secrets Manager 自動ローテーション Lambda 用 SG (#11)。
+   * VpcStack 側で作成し、DatabaseStack から参照することで stack 間の
+   * 循環依存（DB SG への ingress rule が VpcStack ← DatabaseStack を逆生成する）を回避する。
+   */
+  public readonly secretsRotationSecurityGroup: ec2.SecurityGroup;
 
   constructor(scope: Construct, id: string, props: VpcStackProps) {
     super(scope, id, props);
@@ -105,6 +112,32 @@ export class VpcStack extends cdk.Stack {
       ec2.Port.tcp(5432),
       'Allow PostgreSQL from Backend ECS',
     );
+
+    // Security Group: Secrets Manager rotation Lambda (#11)
+    this.secretsRotationSecurityGroup = new ec2.SecurityGroup(this, 'SecretsRotationSg', {
+      vpc: this.vpc,
+      securityGroupName: 'komine-crm-secrets-rotation-sg',
+      description: 'Security group for Secrets Manager rotation Lambda',
+      allowAllOutbound: true,
+    });
+    this.databaseSecurityGroup.addIngressRule(
+      this.secretsRotationSecurityGroup,
+      ec2.Port.tcp(5432),
+      'Allow PostgreSQL from Secrets rotation Lambda',
+    );
+
+    // #11: VPC Flow Logs (REJECT トラフィックを記録し、不審アクセスを可視化)
+    // CloudWatch Logs に出力。保持 30 日。
+    const flowLogsGroup = new logs.LogGroup(this, 'VpcFlowLogsGroup', {
+      logGroupName: '/aws/vpc/flow-logs/komine-crm',
+      retention: logs.RetentionDays.ONE_MONTH,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    this.vpc.addFlowLog('FlowLog', {
+      destination: ec2.FlowLogDestination.toCloudWatchLogs(flowLogsGroup),
+      trafficType: ec2.FlowLogTrafficType.ALL,
+    });
 
     // Outputs
     new cdk.CfnOutput(this, 'VpcId', {

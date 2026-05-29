@@ -1,5 +1,5 @@
 import * as cdk from 'aws-cdk-lib/core';
-import { Template } from 'aws-cdk-lib/assertions';
+import { Template, Match } from 'aws-cdk-lib/assertions';
 import { VpcStack } from '../lib/vpc-stack';
 import { EnvironmentConfig } from '../lib/config';
 
@@ -45,8 +45,15 @@ describe('VpcStack', () => {
     template.resourceCountIs('AWS::EC2::NatGateway', 1);
   });
 
-  test('creates 4 security groups (ALB, Backend, Frontend, Database)', () => {
-    template.resourceCountIs('AWS::EC2::SecurityGroup', 4);
+  test('creates 5 security groups (ALB, Backend, Frontend, Database, SecretsRotation)', () => {
+    template.resourceCountIs('AWS::EC2::SecurityGroup', 5);
+  });
+
+  test('creates a SG for the Secrets Manager rotation Lambda (#11)', () => {
+    template.hasResourceProperties('AWS::EC2::SecurityGroup', {
+      GroupName: 'komine-crm-secrets-rotation-sg',
+      GroupDescription: 'Security group for Secrets Manager rotation Lambda',
+    });
   });
 
   test('ALB security group allows HTTP and HTTPS', () => {
@@ -70,6 +77,22 @@ describe('VpcStack', () => {
   test('exports VPC ID', () => {
     template.hasOutput('VpcId', {
       Export: { Name: 'KomineCrm-VpcId' },
+    });
+  });
+
+  test('enables VPC Flow Logs to CloudWatch Logs (ALL traffic)', () => {
+    template.resourceCountIs('AWS::EC2::FlowLog', 1);
+    template.hasResourceProperties('AWS::EC2::FlowLog', {
+      ResourceType: 'VPC',
+      TrafficType: 'ALL',
+      LogDestinationType: 'cloud-watch-logs',
+    });
+  });
+
+  test('creates a CloudWatch Logs group for flow logs with 1-month retention', () => {
+    template.hasResourceProperties('AWS::Logs::LogGroup', {
+      LogGroupName: '/aws/vpc/flow-logs/komine-crm',
+      RetentionInDays: 30,
     });
   });
 });

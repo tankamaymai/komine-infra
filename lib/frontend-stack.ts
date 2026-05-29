@@ -3,6 +3,7 @@ import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as ecs from 'aws-cdk-lib/aws-ecs';
 import * as ecr from 'aws-cdk-lib/aws-ecr';
 import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
+import * as iam from 'aws-cdk-lib/aws-iam';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
@@ -32,6 +33,10 @@ export class FrontendStack extends cdk.Stack {
   public readonly frontendService: ecs.FargateService;
   public readonly frontendAlb: elbv2.ApplicationLoadBalancer;
   public readonly distribution: cloudfront.Distribution;
+  /** ECS task role (#11: PassRole 制限のため CicdStack に渡す) */
+  public readonly taskRole: iam.IRole;
+  /** ECS task execution role (#11: PassRole 制限のため CicdStack に渡す) */
+  public readonly executionRole: iam.IRole;
 
   constructor(scope: Construct, id: string, props: FrontendStackProps) {
     super(scope, id, props);
@@ -89,6 +94,10 @@ export class FrontendStack extends cdk.Stack {
         { containerPort: 3000, protocol: ecs.Protocol.TCP },
       ],
     });
+
+    // Expose task / execution role for CicdStack PassRole scoping (#11)
+    this.taskRole = taskDefinition.taskRole;
+    this.executionRole = taskDefinition.obtainExecutionRole();
 
     // Fargate Service (reuses Backend's ECS Cluster)
     this.frontendService = new ecs.FargateService(this, 'FrontendService', {

@@ -16,6 +16,11 @@ export interface DatabaseStackProps extends cdk.StackProps {
   readonly config: EnvironmentConfig;
   readonly vpc: ec2.IVpc;
   readonly databaseSecurityGroup: ec2.ISecurityGroup;
+  /**
+   * VpcStack 側で作成した Secrets Manager rotation Lambda 用 SG (#11)。
+   * stack 間の循環依存を避けるため呼び出し側で受け取る。
+   */
+  readonly secretsRotationSecurityGroup?: ec2.ISecurityGroup;
 }
 
 /**
@@ -33,7 +38,7 @@ export class DatabaseStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: DatabaseStackProps) {
     super(scope, id, props);
 
-    const { config, vpc, databaseSecurityGroup } = props;
+    const { config, vpc, databaseSecurityGroup, secretsRotationSecurityGroup } = props;
 
     // Subnet group for RDS (Private Subnets)
     const subnetGroup = new rds.SubnetGroup(this, 'SubnetGroup', {
@@ -95,6 +100,19 @@ export class DatabaseStack extends cdk.Stack {
 
     // AWS Backup の tag-based 選択用タグ（BackupStack の BackupSelection と整合）
     cdk.Tags.of(this.databaseInstance).add(BACKUP_SELECTION_TAG_KEY, BACKUP_SELECTION_TAG_VALUE);
+
+    // Secrets Manager 自動ローテーションは **`SecretsRotationStack` で別 stack 化** (#18)。
+    //
+    // ここに `addRotationSingleUser` を置くと、内部で
+    // `target.connections.allowDefaultPortFrom(rotationLambda)` が呼ばれて
+    // DB SG (VpcStack) に DB port (DatabaseStack の token) 参照の ingress が追加され、
+    // VpcStack ↔ DatabaseStack の循環参照になる。
+    // SecretsRotationStack 側で secret を ARN import し、RotationSchedule を本 stack
+    // 外に配置することで cycle を回避している。
+    //
+    // 受け側プロパティ (secretsRotationSecurityGroup) は VpcStack ↔ SecretsRotationStack
+    // 連携用で本 stack では使わない。
+    void secretsRotationSecurityGroup;
 
     // Outputs
     new cdk.CfnOutput(this, 'DatabaseEndpoint', {

@@ -35,12 +35,17 @@ describe('DatabaseStack', () => {
       vpc,
       description: 'Test DB SG',
     });
+    const rotationSg = new ec2.SecurityGroup(vpcStack, 'RotationSg', {
+      vpc,
+      description: 'Test rotation SG',
+    });
 
     const stack = new DatabaseStack(app, 'TestDatabaseStack', {
       env,
       config: testConfig,
       vpc,
       databaseSecurityGroup: sg,
+      secretsRotationSecurityGroup: rotationSg,
     });
     template = Template.fromStack(stack);
   });
@@ -78,12 +83,17 @@ describe('DatabaseStack', () => {
     const vpcStack = new cdk.Stack(app, 'AltVpcStack', { env });
     const vpc = new ec2.Vpc(vpcStack, 'Vpc', { maxAzs: 2 });
     const sg = new ec2.SecurityGroup(vpcStack, 'DbSg', { vpc, description: 'Test DB SG' });
+    const rotationSg = new ec2.SecurityGroup(vpcStack, 'RotationSg', {
+      vpc,
+      description: 'Test rotation SG',
+    });
 
     const stack = new DatabaseStack(app, 'AltDatabaseStack', {
       env,
       config: { ...testConfig, dbMultiAz: false },
       vpc,
       databaseSecurityGroup: sg,
+      secretsRotationSecurityGroup: rotationSg,
     });
     const altTemplate = Template.fromStack(stack);
     altTemplate.hasResourceProperties('AWS::RDS::DBInstance', {
@@ -148,6 +158,12 @@ describe('DatabaseStack', () => {
   test('outputs database endpoint and port', () => {
     template.hasOutput('DatabaseEndpoint', {});
     template.hasOutput('DatabasePort', {});
+  });
+
+  test('Secrets Manager rotation lives in SecretsRotationStack, not here', () => {
+    // 循環参照を避けるため RotationSchedule は SecretsRotationStack に配置される (#18)。
+    // DatabaseStack 側には作らない。詳細は lib/secrets-rotation-stack.ts のコメント参照。
+    template.resourceCountIs('AWS::SecretsManager::RotationSchedule', 0);
   });
 
   test('honors a custom backup retention / window from config', () => {

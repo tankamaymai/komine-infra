@@ -11,6 +11,14 @@ export interface CicdStackProps extends cdk.StackProps {
   readonly backendServiceArn: string;
   readonly frontendServiceArn: string;
   readonly cloudFrontDistributionArn: string;
+  /**
+   * #11: iam:PassRole を ECS で使う 4 つの role に限定するため CicdStack に渡す。
+   * Backend/Frontend stack の `taskRole` / `executionRole` ARN。
+   */
+  readonly backendTaskRoleArn: string;
+  readonly backendExecutionRoleArn: string;
+  readonly frontendTaskRoleArn: string;
+  readonly frontendExecutionRoleArn: string;
 }
 
 /**
@@ -36,6 +44,10 @@ export class CicdStack extends cdk.Stack {
       backendServiceArn,
       frontendServiceArn,
       cloudFrontDistributionArn,
+      backendTaskRoleArn,
+      backendExecutionRoleArn,
+      frontendTaskRoleArn,
+      frontendExecutionRoleArn,
     } = props;
 
     // GitHub Actions OIDC Provider
@@ -98,20 +110,42 @@ export class CicdStack extends cdk.Stack {
       resources: [backendEcrArn, frontendEcrArn],
     }));
 
-    // ECS permissions (update service, run task for migration)
+    // ECS mutating actions: 対象 service ARN に限定 (#11)
     this.deployRole.addToPolicy(new iam.PolicyStatement({
       sid: 'EcsUpdateService',
       effect: iam.Effect.ALLOW,
       actions: [
         'ecs:UpdateService',
         'ecs:DescribeServices',
-        'ecs:DescribeTaskDefinition',
+      ],
+      resources: [backendServiceArn, frontendServiceArn],
+    }));
+
+    // TaskDefinition の Register/Deregister/Describe は AWS の仕様上リソースレベル制限不可。
+    // 業務影響が低い (deploy role が prefixed family にしか触らない運用) ため、
+    // wildcard で許可しつつ業務メタは PR review で担保する。
+    this.deployRole.addToPolicy(new iam.PolicyStatement({
+      sid: 'EcsTaskDefinitionManagement',
+      effect: iam.Effect.ALLOW,
+      actions: [
         'ecs:RegisterTaskDefinition',
         'ecs:DeregisterTaskDefinition',
-        'ecs:ListTasks',
-        'ecs:DescribeTasks',
+        'ecs:DescribeTaskDefinition',
       ],
       resources: ['*'],
+    }));
+
+    // タスク一覧/詳細はクラスタ条件で限定
+    this.deployRole.addToPolicy(new iam.PolicyStatement({
+      sid: 'EcsListAndDescribeTasks',
+      effect: iam.Effect.ALLOW,
+      actions: ['ecs:ListTasks', 'ecs:DescribeTasks'],
+      resources: ['*'],
+      conditions: {
+        ArnEquals: {
+          'ecs:cluster': ecsClusterArn,
+        },
+      },
     }));
 
     this.deployRole.addToPolicy(new iam.PolicyStatement({
@@ -126,14 +160,19 @@ export class CicdStack extends cdk.Stack {
       },
     }));
 
-    // IAM PassRole (for ECS task execution)
+    // IAM PassRole は ECS Task role / Execution role の 4 ARN に限定 (#11)
     this.deployRole.addToPolicy(new iam.PolicyStatement({
       sid: 'PassRole',
       effect: iam.Effect.ALLOW,
       actions: ['iam:PassRole'],
-      resources: ['*'],
+      resources: [
+        backendTaskRoleArn,
+        backendExecutionRoleArn,
+        frontendTaskRoleArn,
+        frontendExecutionRoleArn,
+      ],
       conditions: {
-        StringLike: {
+        StringEquals: {
           'iam:PassedToService': 'ecs-tasks.amazonaws.com',
         },
       },
@@ -163,14 +202,14 @@ export class CicdStack extends cdk.Stack {
       ],
     }));
 
-    // ECS waiter (wait for service stability)
+    // ECS waiter (wait for service stability).
+    // DescribeServices は EcsUpdateService 側で対象 service ARN に限定済みなので、
+    // ここでは ELB の TargetHealth Describe のみ。これはリソースレベル制限非対応のため
+    // wildcard を許容する。
     this.deployRole.addToPolicy(new iam.PolicyStatement({
-      sid: 'EcsWaiter',
+      sid: 'ElbWaiter',
       effect: iam.Effect.ALLOW,
-      actions: [
-        'ecs:DescribeServices',
-        'elasticloadbalancing:DescribeTargetHealth',
-      ],
+      actions: ['elasticloadbalancing:DescribeTargetHealth'],
       resources: ['*'],
     }));
 
