@@ -6,6 +6,11 @@ import { StorageStack } from '../lib/storage-stack';
 import { BackendStack } from '../lib/backend-stack';
 import { FrontendStack } from '../lib/frontend-stack';
 import { CicdStack } from '../lib/cicd-stack';
+import {
+  BackupStack,
+  BackupSecondaryVaultStack,
+  SECONDARY_BACKUP_VAULT_NAME,
+} from '../lib/backup-stack';
 import { prodConfig } from '../lib/config';
 
 const app = new cdk.App();
@@ -55,6 +60,28 @@ const frontendStack = new FrontendStack(app, 'KomineFrontendStack', {
 });
 frontendStack.addDependency(vpcStack);
 frontendStack.addDependency(backendStack);
+
+// Phase 4.5: Backup (AWS Backup vault + plan + cross-region copy)
+// クロスリージョン DR の受け側 vault を別リージョン (ap-northeast-3) に配置。
+// 別リージョン stack は CDK の依存解決対象外のため、初回は手動で先にデプロイすること:
+//   `npx cdk deploy KomineBackupSecondaryVaultStack`
+// （cdk diff/deploy では Region 違いで同時に走らない）。
+let crossRegionVaultArn: string | undefined;
+if (prodConfig.dbBackupCrossRegion) {
+  new BackupSecondaryVaultStack(app, 'KomineBackupSecondaryVaultStack', {
+    env: { account: prodConfig.account, region: prodConfig.dbBackupCrossRegion },
+    vaultName: SECONDARY_BACKUP_VAULT_NAME,
+  });
+
+  crossRegionVaultArn = `arn:aws:backup:${prodConfig.dbBackupCrossRegion}:${prodConfig.account}:backup-vault:${SECONDARY_BACKUP_VAULT_NAME}`;
+}
+
+const backupStack = new BackupStack(app, 'KomineBackupStack', {
+  env,
+  config: prodConfig,
+  crossRegionVaultArn,
+});
+backupStack.addDependency(databaseStack);
 
 // Phase 5: CI/CD
 const cicdStack = new CicdStack(app, 'KomineCicdStack', {

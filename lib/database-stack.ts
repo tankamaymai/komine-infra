@@ -5,6 +5,13 @@ import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import { Construct } from 'constructs';
 import { EnvironmentConfig } from './config';
 
+/**
+ * Tag key used by AWS Backup selection to pick up the RDS instance.
+ * BackupStack の BackupSelection と必ず一致させること。
+ */
+export const BACKUP_SELECTION_TAG_KEY = 'komine:backup';
+export const BACKUP_SELECTION_TAG_VALUE = 'rds-primary';
+
 export interface DatabaseStackProps extends cdk.StackProps {
   readonly config: EnvironmentConfig;
   readonly vpc: ec2.IVpc;
@@ -57,7 +64,16 @@ export class DatabaseStack extends cdk.Stack {
       // メンテナンス窓は UTC 指定。`sun:18:00-sun:19:00 UTC` = 月曜 03:00-04:00 JST
       // （霊園の業務時間外・最オフピーク帯）。
       preferredMaintenanceWindow: 'sun:18:00-sun:19:00',
-      backupRetention: cdk.Duration.days(7),
+      // #8: バックアップ強化。
+      // - 保持: config.dbBackupRetentionDays（本番 30 日）。PITR もこの期間内で可能。
+      // - window: config.dbPreferredBackupWindow（17:00-18:00 UTC = JST 02:00-03:00）。
+      //   maintenance 窓 (sun:18:00-sun:19:00 UTC) と非重複に設定。
+      // - copyTagsToSnapshot: AWS Backup の tag-based 選択と整合させるため true。
+      // - deleteAutomatedBackups: false にして instance 削除後も保持期間中は復旧可能に。
+      backupRetention: cdk.Duration.days(config.dbBackupRetentionDays),
+      preferredBackupWindow: config.dbPreferredBackupWindow,
+      copyTagsToSnapshot: true,
+      deleteAutomatedBackups: false,
       deletionProtection: true,
       removalPolicy: cdk.RemovalPolicy.SNAPSHOT,
       storageEncrypted: true,
@@ -77,6 +93,9 @@ export class DatabaseStack extends cdk.Stack {
 
     this.databaseSecret = this.databaseInstance.secret!;
 
+    // AWS Backup の tag-based 選択用タグ（BackupStack の BackupSelection と整合）
+    cdk.Tags.of(this.databaseInstance).add(BACKUP_SELECTION_TAG_KEY, BACKUP_SELECTION_TAG_VALUE);
+
     // Outputs
     new cdk.CfnOutput(this, 'DatabaseEndpoint', {
       value: this.databaseInstance.dbInstanceEndpointAddress,
@@ -92,6 +111,12 @@ export class DatabaseStack extends cdk.Stack {
       value: this.databaseSecret.secretArn,
       description: 'ARN of the database credentials secret',
       exportName: 'KomineCrm-DatabaseSecretArn',
+    });
+
+    new cdk.CfnOutput(this, 'DatabaseInstanceArn', {
+      value: this.databaseInstance.instanceArn,
+      description: 'ARN of the RDS instance (AWS Backup selection で使用)',
+      exportName: 'KomineCrm-DatabaseInstanceArn',
     });
   }
 }

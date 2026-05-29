@@ -11,6 +11,10 @@ const testConfig: EnvironmentConfig = {
   dbInstanceClass: 't4g.micro',
   dbAllocatedStorage: 20,
   dbMultiAz: true,
+  dbBackupRetentionDays: 30,
+  dbPreferredBackupWindow: '17:00-18:00',
+  dbBackupCrossRegion: 'ap-northeast-3',
+  dbBackupCrossRegionRetentionDays: 30,
   backendDesiredCount: 1,
   frontendDesiredCount: 1,
   githubOwner: 'test-owner',
@@ -51,9 +55,20 @@ describe('DatabaseStack', () => {
       MultiAZ: true,
       DeletionProtection: true,
       StorageEncrypted: true,
-      BackupRetentionPeriod: 7,
+      BackupRetentionPeriod: 30,
       DBName: 'komine_cemetery_crm',
       PreferredMaintenanceWindow: 'sun:18:00-sun:19:00',
+      PreferredBackupWindow: '17:00-18:00',
+      CopyTagsToSnapshot: true,
+      DeleteAutomatedBackups: false,
+    });
+  });
+
+  test('applies the AWS Backup selection tag to the RDS instance', () => {
+    template.hasResourceProperties('AWS::RDS::DBInstance', {
+      Tags: Match.arrayWith([
+        Match.objectLike({ Key: 'komine:backup', Value: 'rds-primary' }),
+      ]),
     });
   });
 
@@ -124,8 +139,38 @@ describe('DatabaseStack', () => {
     });
   });
 
+  test('exports database instance ARN for AWS Backup integration', () => {
+    template.hasOutput('DatabaseInstanceArn', {
+      Export: { Name: 'KomineCrm-DatabaseInstanceArn' },
+    });
+  });
+
   test('outputs database endpoint and port', () => {
     template.hasOutput('DatabaseEndpoint', {});
     template.hasOutput('DatabasePort', {});
+  });
+
+  test('honors a custom backup retention / window from config', () => {
+    const app = new cdk.App();
+    const env = { account: testConfig.account, region: testConfig.region };
+    const vpcStack = new cdk.Stack(app, 'AltBackupVpcStack', { env });
+    const vpc = new ec2.Vpc(vpcStack, 'Vpc', { maxAzs: 2 });
+    const sg = new ec2.SecurityGroup(vpcStack, 'DbSg', { vpc, description: 'Test DB SG' });
+
+    const stack = new DatabaseStack(app, 'AltBackupDatabaseStack', {
+      env,
+      config: {
+        ...testConfig,
+        dbBackupRetentionDays: 14,
+        dbPreferredBackupWindow: '18:00-19:00',
+      },
+      vpc,
+      databaseSecurityGroup: sg,
+    });
+    const altTemplate = Template.fromStack(stack);
+    altTemplate.hasResourceProperties('AWS::RDS::DBInstance', {
+      BackupRetentionPeriod: 14,
+      PreferredBackupWindow: '18:00-19:00',
+    });
   });
 });

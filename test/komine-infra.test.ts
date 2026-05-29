@@ -10,6 +10,8 @@ const testConfig: EnvironmentConfig = {
   dbInstanceClass: 't4g.micro',
   dbAllocatedStorage: 20,
   dbMultiAz: false,
+  dbBackupRetentionDays: 30,
+  dbPreferredBackupWindow: '17:00-18:00',
   backendDesiredCount: 1,
   frontendDesiredCount: 1,
   githubOwner: 'test-owner',
