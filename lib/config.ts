@@ -45,6 +45,16 @@ export interface EnvironmentConfig {
   readonly frontendDesiredCount: number;
   /** Custom domain name (optional) */
   readonly domainName?: string;
+  /**
+   * 本番 backend の CORS 許可オリジン (#11)。
+   * backend は本番 (`NODE_ENV=production`) で `ALLOWED_ORIGINS` が空だと
+   * Origin ヘッダ付きリクエストを全て reject するため、本番ドメインを必ず注入する。
+   * `domainName` を設定すると `https://${domainName}` が自動で追加される
+   * （#10 で ACM 証明書用に `domainName` を入れれば CORS も同時に通る）ので、
+   * ここには CloudFront 既定ドメイン等の追加オリジンだけを列挙すればよい。
+   * 例: ['https://d111111abcdef8.cloudfront.net']
+   */
+  readonly allowedOrigins?: string[];
   /** GitHub organization/owner for OIDC trust */
   readonly githubOwner: string;
   /** GitHub repository names for OIDC trust */
@@ -73,6 +83,9 @@ export const prodConfig: EnvironmentConfig = {
   dbBackupCrossRegionRetentionDays: 30,
   backendDesiredCount: 1,
   frontendDesiredCount: 1,
+  // CORS 許可オリジン (#11)。本番ドメイン確定 (#10) で `domainName` を設定すれば
+  // `https://${domainName}` が自動追加される。CloudFront 既定ドメインなど追加分のみここに列挙。
+  allowedOrigins: [],
   githubOwner: 'tankamaymai',
   githubRepos: {
     backend: 'komine--cemetery-crm-backend',

@@ -139,6 +139,21 @@ describe('BackendStack', () => {
     });
   });
 
+  test('does not inject ALLOWED_ORIGINS when no origins configured (#11, #10 待ち)', () => {
+    // domainName も allowedOrigins も無い既定 config では env を出さず、
+    // 本番ドメイン未確定であることを CFN 差分で可視化する。
+    template.hasResourceProperties('AWS::ECS::TaskDefinition', {
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Name: 'backend',
+          Environment: Match.not(
+            Match.arrayWith([Match.objectLike({ Name: 'ALLOWED_ORIGINS' })]),
+          ),
+        }),
+      ]),
+    });
+  });
+
   test('container has secrets from Secrets Manager', () => {
     template.hasResourceProperties('AWS::ECS::TaskDefinition', {
       ContainerDefinitions: Match.arrayWith([
@@ -237,6 +252,91 @@ describe('BackendStack', () => {
   test('exports ECS cluster name', () => {
     template.hasOutput('ClusterName', {
       Export: { Name: 'KomineCrm-ClusterName' },
+    });
+  });
+});
+
+describe('BackendStack ALLOWED_ORIGINS injection (#11)', () => {
+  const buildTemplate = (overrides: Partial<EnvironmentConfig>): Template => {
+    const app = new cdk.App();
+    const env = { account: testConfig.account, region: testConfig.region };
+    const depStack = new cdk.Stack(app, 'TestDepStack', { env });
+    const vpc = new ec2.Vpc(depStack, 'Vpc', { maxAzs: 2 });
+    const albSg = new ec2.SecurityGroup(depStack, 'AlbSg', { vpc, description: 'ALB SG' });
+    const backendSg = new ec2.SecurityGroup(depStack, 'BackendSg', { vpc, description: 'Backend SG' });
+    const secret = new secretsmanager.Secret(depStack, 'DbSecret', {
+      secretObjectValue: {
+        host: cdk.SecretValue.unsafePlainText('localhost'),
+        port: cdk.SecretValue.unsafePlainText('5432'),
+        username: cdk.SecretValue.unsafePlainText('admin'),
+        password: cdk.SecretValue.unsafePlainText('password'),
+        dbname: cdk.SecretValue.unsafePlainText('testdb'),
+      },
+    });
+    const bucket = new s3.Bucket(depStack, 'DocsBucket');
+    const stack = new BackendStack(app, 'TestBackendStack', {
+      env,
+      config: { ...testConfig, ...overrides },
+      vpc,
+      albSecurityGroup: albSg,
+      backendSecurityGroup: backendSg,
+      databaseSecret: secret,
+      documentsBucket: bucket,
+    });
+    return Template.fromStack(stack);
+  };
+
+  test('derives ALLOWED_ORIGINS from domainName (#10 連携)', () => {
+    const template = buildTemplate({ domainName: 'crm.example.com' });
+    template.hasResourceProperties('AWS::ECS::TaskDefinition', {
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Name: 'backend',
+          Environment: Match.arrayWith([
+            Match.objectLike({ Name: 'ALLOWED_ORIGINS', Value: 'https://crm.example.com' }),
+          ]),
+        }),
+      ]),
+    });
+  });
+
+  test('merges explicit allowedOrigins with domainName-derived origin and dedupes', () => {
+    const template = buildTemplate({
+      domainName: 'crm.example.com',
+      allowedOrigins: ['https://d111111abcdef8.cloudfront.net', 'https://crm.example.com'],
+    });
+    template.hasResourceProperties('AWS::ECS::TaskDefinition', {
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Name: 'backend',
+          Environment: Match.arrayWith([
+            Match.objectLike({
+              Name: 'ALLOWED_ORIGINS',
+              // crm.example.com は重複排除され 1 回だけ
+              Value: 'https://d111111abcdef8.cloudfront.net,https://crm.example.com',
+            }),
+          ]),
+        }),
+      ]),
+    });
+  });
+
+  test('injects ALLOWED_ORIGINS from allowedOrigins alone (no domainName)', () => {
+    const template = buildTemplate({
+      allowedOrigins: ['https://d111111abcdef8.cloudfront.net'],
+    });
+    template.hasResourceProperties('AWS::ECS::TaskDefinition', {
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Name: 'backend',
+          Environment: Match.arrayWith([
+            Match.objectLike({
+              Name: 'ALLOWED_ORIGINS',
+              Value: 'https://d111111abcdef8.cloudfront.net',
+            }),
+          ]),
+        }),
+      ]),
     });
   });
 });

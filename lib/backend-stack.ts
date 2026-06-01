@@ -45,6 +45,16 @@ export class BackendStack extends cdk.Stack {
 
     const { config, vpc, albSecurityGroup, backendSecurityGroup, databaseSecret, documentsBucket } = props;
 
+    // #11: CORS 許可オリジン。backend は本番で `ALLOWED_ORIGINS` が空だと
+    // Origin ヘッダ付きリクエスト（CloudFront 経由の同一オリジン POST 含む）を全 reject するため、
+    // 本番ドメインを task definition に注入する。`domainName` (#10) 設定時は自動で含める。
+    const corsAllowedOrigins = Array.from(
+      new Set([
+        ...(config.allowedOrigins ?? []),
+        ...(config.domainName ? [`https://${config.domainName}`] : []),
+      ]),
+    );
+
     // ECR Repository
     this.ecrRepository = new ecr.Repository(this, 'BackendRepo', {
       repositoryName: 'komine-crm-backend',
@@ -89,6 +99,11 @@ export class BackendStack extends cdk.Stack {
       environment: {
         NODE_ENV: 'production',
         PORT: '4000',
+        // 空のときは敢えて未設定にする（空文字を渡しても backend 側で [] 扱いになるだけなので、
+        // 「まだ本番ドメイン未確定 (#10 待ち)」が CFN 差分で可視化されるよう env 自体を出さない）。
+        ...(corsAllowedOrigins.length > 0
+          ? { ALLOWED_ORIGINS: corsAllowedOrigins.join(',') }
+          : {}),
       },
       secrets: {
         DB_HOST: ecs.Secret.fromSecretsManager(databaseSecret, 'host'),
