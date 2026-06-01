@@ -55,6 +55,28 @@ export class BackendStack extends cdk.Stack {
       ]),
     );
 
+    // #20: Supabase 認証の本番設定。値は operational（Supabase 発行の URL / service role key）
+    // のため、設定済みのときだけ注入する。未設定時は backend が認証エンドポイントで graceful に
+    // 503 を返す（src/middleware/auth.ts: SUPABASE_* 未設定時）。
+    const supabaseEnv: Record<string, string> = {};
+    if (config.supabaseUrl) {
+      // URL は機微情報ではないので平文 env で渡す。
+      supabaseEnv['SUPABASE_URL'] = config.supabaseUrl;
+    }
+
+    const supabaseSecrets: Record<string, ecs.Secret> = {};
+    if (config.supabaseServiceRoleKeySecretName) {
+      // service role key は機微情報。AWS では生成できない（Supabase 発行）ため、
+      // ops が事前に作成・投入した secret を名前で import して注入する。
+      const supabaseServiceRoleKey = secretsmanager.Secret.fromSecretNameV2(
+        this,
+        'SupabaseServiceRoleKey',
+        config.supabaseServiceRoleKeySecretName,
+      );
+      supabaseSecrets['SUPABASE_SERVICE_ROLE_KEY'] =
+        ecs.Secret.fromSecretsManager(supabaseServiceRoleKey);
+    }
+
     // ECR Repository
     this.ecrRepository = new ecr.Repository(this, 'BackendRepo', {
       repositoryName: 'komine-crm-backend',
@@ -104,6 +126,7 @@ export class BackendStack extends cdk.Stack {
         ...(corsAllowedOrigins.length > 0
           ? { ALLOWED_ORIGINS: corsAllowedOrigins.join(',') }
           : {}),
+        ...supabaseEnv,
       },
       secrets: {
         DB_HOST: ecs.Secret.fromSecretsManager(databaseSecret, 'host'),
@@ -111,6 +134,7 @@ export class BackendStack extends cdk.Stack {
         DB_USERNAME: ecs.Secret.fromSecretsManager(databaseSecret, 'username'),
         DB_PASSWORD: ecs.Secret.fromSecretsManager(databaseSecret, 'password'),
         DB_NAME: ecs.Secret.fromSecretsManager(databaseSecret, 'dbname'),
+        ...supabaseSecrets,
       },
       healthCheck: {
         command: ['CMD-SHELL', 'wget --no-verbose --tries=1 --spider http://localhost:4000/health || exit 1'],

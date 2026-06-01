@@ -340,3 +340,91 @@ describe('BackendStack ALLOWED_ORIGINS injection (#11)', () => {
     });
   });
 });
+
+describe('BackendStack Supabase auth injection (#20)', () => {
+  const buildTemplate = (overrides: Partial<EnvironmentConfig>): Template => {
+    const app = new cdk.App();
+    const env = { account: testConfig.account, region: testConfig.region };
+    const depStack = new cdk.Stack(app, 'TestDepStack', { env });
+    const vpc = new ec2.Vpc(depStack, 'Vpc', { maxAzs: 2 });
+    const albSg = new ec2.SecurityGroup(depStack, 'AlbSg', { vpc, description: 'ALB SG' });
+    const backendSg = new ec2.SecurityGroup(depStack, 'BackendSg', { vpc, description: 'Backend SG' });
+    const secret = new secretsmanager.Secret(depStack, 'DbSecret', {
+      secretObjectValue: {
+        host: cdk.SecretValue.unsafePlainText('localhost'),
+        port: cdk.SecretValue.unsafePlainText('5432'),
+        username: cdk.SecretValue.unsafePlainText('admin'),
+        password: cdk.SecretValue.unsafePlainText('password'),
+        dbname: cdk.SecretValue.unsafePlainText('testdb'),
+      },
+    });
+    const bucket = new s3.Bucket(depStack, 'DocsBucket');
+    const stack = new BackendStack(app, 'TestBackendStack', {
+      env,
+      config: { ...testConfig, ...overrides },
+      vpc,
+      albSecurityGroup: albSg,
+      backendSecurityGroup: backendSg,
+      databaseSecret: secret,
+      documentsBucket: bucket,
+    });
+    return Template.fromStack(stack);
+  };
+
+  test('does not inject Supabase env/secret when unconfigured (graceful 503)', () => {
+    const template = buildTemplate({});
+    template.hasResourceProperties('AWS::ECS::TaskDefinition', {
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Name: 'backend',
+          Environment: Match.not(
+            Match.arrayWith([Match.objectLike({ Name: 'SUPABASE_URL' })]),
+          ),
+          Secrets: Match.not(
+            Match.arrayWith([Match.objectLike({ Name: 'SUPABASE_SERVICE_ROLE_KEY' })]),
+          ),
+        }),
+      ]),
+    });
+  });
+
+  test('injects SUPABASE_URL as plain env when supabaseUrl set', () => {
+    const template = buildTemplate({ supabaseUrl: 'https://abcd.supabase.co' });
+    template.hasResourceProperties('AWS::ECS::TaskDefinition', {
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Name: 'backend',
+          Environment: Match.arrayWith([
+            Match.objectLike({ Name: 'SUPABASE_URL', Value: 'https://abcd.supabase.co' }),
+          ]),
+        }),
+      ]),
+    });
+  });
+
+  test('injects SUPABASE_SERVICE_ROLE_KEY from Secrets Manager when secret name set', () => {
+    const template = buildTemplate({
+      supabaseServiceRoleKeySecretName: 'komine-crm/supabase-service-role-key',
+    });
+    template.hasResourceProperties('AWS::ECS::TaskDefinition', {
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Name: 'backend',
+          Secrets: Match.arrayWith([
+            Match.objectLike({ Name: 'SUPABASE_SERVICE_ROLE_KEY' }),
+          ]),
+        }),
+      ]),
+    });
+    // 実行ロールに当該 secret の読み取り権限が付与されること
+    template.hasResourceProperties('AWS::IAM::Policy', {
+      PolicyDocument: Match.objectLike({
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Action: Match.arrayWith(['secretsmanager:GetSecretValue']),
+          }),
+        ]),
+      }),
+    });
+  });
+});

@@ -55,6 +55,19 @@ export interface EnvironmentConfig {
    * 例: ['https://d111111abcdef8.cloudfront.net']
    */
   readonly allowedOrigins?: string[];
+  /**
+   * Supabase プロジェクト URL (#20)。認証 (JWT 検証) に使う。機微情報ではないため
+   * 平文 env (`SUPABASE_URL`) として注入する。未設定時は注入せず、backend は認証
+   * エンドポイントで 503 を返す（graceful degradation）。
+   */
+  readonly supabaseUrl?: string;
+  /**
+   * Supabase service role key を保持する Secrets Manager secret の名前または ARN (#20)。
+   * service role key は機微情報かつ Supabase 発行で AWS 側では生成できないため、
+   * ops が事前に作成・投入した secret を名前で参照し `SUPABASE_SERVICE_ROLE_KEY` に注入する。
+   * 未設定時は注入せず、backend は認証で 503 を返す。
+   */
+  readonly supabaseServiceRoleKeySecretName?: string;
   /** GitHub organization/owner for OIDC trust */
   readonly githubOwner: string;
   /** GitHub repository names for OIDC trust */
@@ -86,6 +99,9 @@ export const prodConfig: EnvironmentConfig = {
   // CORS 許可オリジン (#11)。本番ドメイン確定 (#10) で `domainName` を設定すれば
   // `https://${domainName}` が自動追加される。CloudFront 既定ドメインなど追加分のみここに列挙。
   allowedOrigins: [],
+  // Supabase 認証の本番設定 (#20)。値は operational のため未設定（設定するまで認証は 503）。
+  // 例: supabaseUrl: 'https://xxxx.supabase.co',
+  //     supabaseServiceRoleKeySecretName: 'komine-crm/supabase-service-role-key',
   githubOwner: 'tankamaymai',
   githubRepos: {
     backend: 'komine--cemetery-crm-backend',
