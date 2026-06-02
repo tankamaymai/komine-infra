@@ -8,6 +8,7 @@ import { FrontendStack } from '../lib/frontend-stack';
 import { CicdStack } from '../lib/cicd-stack';
 import { SecurityStack } from '../lib/security-stack';
 import { SecretsRotationStack } from '../lib/secrets-rotation-stack';
+import { CostStack } from '../lib/cost-stack';
 import {
   BackupStack,
   BackupSecondaryVaultStack,
@@ -119,5 +120,9 @@ const secretsRotationStack = new SecretsRotationStack(app, 'KomineSecretsRotatio
 });
 secretsRotationStack.addDependency(vpcStack);
 secretsRotationStack.addDependency(databaseStack);
+
+// Phase 8: Cost guardrail (AWS Budgets 月額予算 + アラート)
+// account-level リソースのため他 stack への依存は無し。
+new CostStack(app, 'KomineCostStack', { env, config: prodConfig });
 
 app.synth();

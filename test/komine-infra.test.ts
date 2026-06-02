@@ -14,6 +14,7 @@ const testConfig: EnvironmentConfig = {
   dbPreferredBackupWindow: '17:00-18:00',
   backendDesiredCount: 1,
   frontendDesiredCount: 1,
+  monthlyCostBudgetUsd: 200,
   githubOwner: 'test-owner',
   githubRepos: { backend: 'test-backend', frontend: 'test-frontend' },
 };

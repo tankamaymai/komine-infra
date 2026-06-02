@@ -68,6 +68,21 @@ export interface EnvironmentConfig {
    * 未設定時は注入せず、backend は認証で 503 を返す。
    */
   readonly supabaseServiceRoleKeySecretName?: string;
+  /**
+   * 月額コスト予算 (USD)。AWS Budgets のアラート閾値に使う (#13)。
+   * フル本番構成（WAF/HTTPS/監視/Multi-AZ 全部入り）の試算 ~$180/月 に
+   * 安全マージンを乗せた既定値。実コストの推移に合わせて調整する。
+   * docs/cost-estimate.md にシナリオ別の根拠あり。
+   */
+  readonly monthlyCostBudgetUsd: number;
+  /**
+   * コスト予算アラートの通知先メールアドレス (#13)。
+   * 設定すると AWS Budgets が閾値超過（80%/100% 実績・100% 予測）時に各アドレスへ通知する。
+   * 空のときは予算（コスト追跡）のみ作成し通知は付けない
+   * （AWS Budgets の通知は購読者 1 名以上が必須のため）。後からの追加も容易。
+   * 例: ['ops@example.com']
+   */
+  readonly costAlertEmails?: string[];
   /** GitHub organization/owner for OIDC trust */
   readonly githubOwner: string;
   /** GitHub repository names for OIDC trust */
@@ -102,6 +117,11 @@ export const prodConfig: EnvironmentConfig = {
   // Supabase 認証の本番設定 (#20)。値は operational のため未設定（設定するまで認証は 503）。
   // 例: supabaseUrl: 'https://xxxx.supabase.co',
   //     supabaseServiceRoleKeySecretName: 'komine-crm/supabase-service-role-key',
+  // コスト予算アラート (#13)。フル本番構成 ~$180/月 にマージンを乗せた $200 を既定値に。
+  // 通知先メールは operational のため未設定（設定するまで通知は付かず、予算追跡のみ）。
+  // 例: costAlertEmails: ['ops@example.com'],
+  monthlyCostBudgetUsd: 200,
+  costAlertEmails: [],
   githubOwner: 'tankamaymai',
   githubRepos: {
     backend: 'komine--cemetery-crm-backend',
