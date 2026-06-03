@@ -45,6 +45,10 @@ describe('FrontendStack', () => {
       vpc,
       internetFacing: true,
     });
+    const backendListener = backendAlb.addListener('L', {
+      port: 80,
+      defaultAction: elbv2.ListenerAction.fixedResponse(200),
+    });
 
     const stack = new FrontendStack(app, 'TestFrontendStack', {
       env,
@@ -52,8 +56,8 @@ describe('FrontendStack', () => {
       vpc,
       ecsCluster: cluster,
       frontendSecurityGroup: frontendSg,
-      albSecurityGroup: albSg,
       backendAlb,
+      backendHttpListener: backendListener,
     });
     template = Template.fromStack(stack);
   });
@@ -136,11 +140,17 @@ describe('FrontendStack', () => {
     });
   });
 
-  test('creates an internet-facing Frontend ALB', () => {
-    template.hasResourceProperties('AWS::ElasticLoadBalancingV2::LoadBalancer', {
-      Name: 'komine-crm-frontend-alb',
-      Scheme: 'internet-facing',
-      Type: 'application',
+  test('does not create its own ALB and attaches a /* catch-all rule to the shared listener (#13 ③)', () => {
+    // 専用 ALB は廃止し共有 ALB を使う。frontend stack には LoadBalancer は無い。
+    template.resourceCountIs('AWS::ElasticLoadBalancingV2::LoadBalancer', 0);
+    template.hasResourceProperties('AWS::ElasticLoadBalancingV2::ListenerRule', {
+      Priority: 100,
+      Conditions: Match.arrayWith([
+        Match.objectLike({
+          Field: 'path-pattern',
+          PathPatternConfig: Match.objectLike({ Values: ['/*'] }),
+        }),
+      ]),
     });
   });
 
@@ -152,13 +162,6 @@ describe('FrontendStack', () => {
       TargetType: 'ip',
       HealthCheckPath: '/',
       HealthCheckPort: '3000',
-    });
-  });
-
-  test('creates an HTTP listener on port 80', () => {
-    template.hasResourceProperties('AWS::ElasticLoadBalancingV2::Listener', {
-      Port: 80,
-      Protocol: 'HTTP',
     });
   });
 
@@ -195,21 +198,15 @@ describe('FrontendStack', () => {
     });
   });
 
-  test('CloudFront has /api/* behavior for backend', () => {
-    template.hasResourceProperties('AWS::CloudFront::Distribution', {
-      DistributionConfig: Match.objectLike({
-        CacheBehaviors: Match.arrayWith([
-          Match.objectLike({
-            PathPattern: '/api/*',
-            ViewerProtocolPolicy: 'redirect-to-https',
-          }),
-          Match.objectLike({
-            PathPattern: '/api-docs*',
-            ViewerProtocolPolicy: 'redirect-to-https',
-          }),
-        ]),
-      }),
-    });
+  test('CloudFront uses a single origin; ALB does the /api routing (#13 ③)', () => {
+    const dist = template.findResources('AWS::CloudFront::Distribution');
+    const cfg = Object.values(dist)[0].Properties.DistributionConfig;
+    // オリジンは共有 ALB 1 個のみ。
+    expect((cfg.Origins || []).length).toBe(1);
+    // /api 系の behavior は CloudFront には持たない（ALB のリスナールールで振り分ける）。
+    const patterns = (cfg.CacheBehaviors || []).map((b: { PathPattern: string }) => b.PathPattern);
+    expect(patterns).not.toContain('/api/*');
+    expect(patterns).not.toContain('/api-docs*');
   });
 
   test('CloudFront has /_next/static/* behavior with caching', () => {
@@ -248,6 +245,54 @@ describe('FrontendStack', () => {
   test('exports frontend ECR repository URI', () => {
     template.hasOutput('FrontendEcrRepositoryUri', {
       Export: { Name: 'KomineCrm-FrontendEcrUri' },
+    });
+  });
+});
+
+describe('FrontendStack off-hours scheduling (#13 ②)', () => {
+  let template: Template;
+
+  beforeAll(() => {
+    const app = new cdk.App();
+    const env = { account: testConfig.account, region: testConfig.region };
+    const depStack = new cdk.Stack(app, 'DepStack', { env });
+    const vpc = new ec2.Vpc(depStack, 'Vpc', { maxAzs: 2 });
+    const cluster = new ecs.Cluster(depStack, 'Cluster', { vpc });
+    const frontendSg = new ec2.SecurityGroup(depStack, 'FrontendSg', { vpc, description: 'Frontend SG' });
+    const albSg = new ec2.SecurityGroup(depStack, 'AlbSg', { vpc, description: 'ALB SG' });
+    const backendAlb = new elbv2.ApplicationLoadBalancer(depStack, 'BackendAlb', { vpc, internetFacing: true });
+    const backendListener = backendAlb.addListener('L', {
+      port: 80,
+      defaultAction: elbv2.ListenerAction.fixedResponse(200),
+    });
+    const stack = new FrontendStack(app, 'OffHoursFrontendStack', {
+      env,
+      config: { ...testConfig, offHoursSchedule: { enabled: true, startHourJst: 8, endHourJst: 20 } },
+      vpc,
+      ecsCluster: cluster,
+      frontendSecurityGroup: frontendSg,
+      backendAlb,
+      backendHttpListener: backendListener,
+    });
+    template = Template.fromStack(stack);
+  });
+
+  test('adds scheduled scale-up at 08:00 and scale-to-zero at 20:00 JST on weekdays', () => {
+    template.hasResourceProperties('AWS::ApplicationAutoScaling::ScalableTarget', {
+      ScheduledActions: Match.arrayWith([
+        Match.objectLike({
+          ScheduledActionName: 'StartBusinessHours',
+          Schedule: 'cron(0 8 ? * MON-FRI *)',
+          Timezone: 'Asia/Tokyo',
+          ScalableTargetAction: Match.objectLike({ MinCapacity: 1, MaxCapacity: 3 }),
+        }),
+        Match.objectLike({
+          ScheduledActionName: 'StopOutsideBusinessHours',
+          Schedule: 'cron(0 20 ? * MON-FRI *)',
+          Timezone: 'Asia/Tokyo',
+          ScalableTargetAction: Match.objectLike({ MinCapacity: 0, MaxCapacity: 0 }),
+        }),
+      ]),
     });
   });
 });

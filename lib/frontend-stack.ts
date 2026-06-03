@@ -7,6 +7,7 @@ import * as iam from 'aws-cdk-lib/aws-iam';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
+import * as appscaling from 'aws-cdk-lib/aws-applicationautoscaling';
 import { Construct } from 'constructs';
 import { EnvironmentConfig } from './config';
 
@@ -15,8 +16,10 @@ export interface FrontendStackProps extends cdk.StackProps {
   readonly vpc: ec2.IVpc;
   readonly ecsCluster: ecs.ICluster;
   readonly frontendSecurityGroup: ec2.ISecurityGroup;
-  readonly albSecurityGroup: ec2.ISecurityGroup;
+  /** 共有 ALB（BackendStack が作成）。CloudFront の単一オリジン兼 frontend ルートの ALB。 */
   readonly backendAlb: elbv2.IApplicationLoadBalancer;
+  /** 共有 ALB の HTTP リスナー (#13 ③)。ここに frontend の catch-all ルールを追加する。 */
+  readonly backendHttpListener: elbv2.IApplicationListener;
 }
 
 /**
@@ -25,13 +28,12 @@ export interface FrontendStackProps extends cdk.StackProps {
  * Creates:
  * - ECR repository for frontend Docker images
  * - Fargate Service (reuses Backend's ECS Cluster)
- * - Frontend ALB for Next.js SSR
- * - CloudFront distribution routing /api/* to Backend ALB, default to Frontend ALB
+ * - Frontend target group attached to the shared ALB via a catch-all (/*) rule (#13 ③)
+ * - CloudFront distribution with a single origin (shared ALB does path-based routing)
  */
 export class FrontendStack extends cdk.Stack {
   public readonly ecrRepository: ecr.Repository;
   public readonly frontendService: ecs.FargateService;
-  public readonly frontendAlb: elbv2.ApplicationLoadBalancer;
   public readonly distribution: cloudfront.Distribution;
   /** ECS task role (#11: PassRole 制限のため CicdStack に渡す) */
   public readonly taskRole: iam.IRole;
@@ -41,7 +43,7 @@ export class FrontendStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: FrontendStackProps) {
     super(scope, id, props);
 
-    const { config, vpc, ecsCluster, frontendSecurityGroup, albSecurityGroup, backendAlb } = props;
+    const { config, vpc, ecsCluster, frontendSecurityGroup, backendAlb, backendHttpListener } = props;
 
     // ECR Repository
     this.ecrRepository = new ecr.Repository(this, 'FrontendRepo', {
@@ -112,16 +114,10 @@ export class FrontendStack extends cdk.Stack {
       minHealthyPercent: 100,
     });
 
-    // Frontend ALB
-    this.frontendAlb = new elbv2.ApplicationLoadBalancer(this, 'FrontendAlb', {
-      vpc,
-      internetFacing: true,
-      loadBalancerName: 'komine-crm-frontend-alb',
-      securityGroup: albSecurityGroup,
-      vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
-    });
-
-    // Target Group
+    // #13 ③: 専用 ALB は廃止し、BackendStack の共有 ALB に frontend ターゲットグループを
+    // catch-all ルール（/* → frontend）で接続する。/api/* ・ /api-docs* は共有リスナーの
+    // 高優先度ルール（BackendStack, priority 10/20）で backend へ向くので、ここは
+    // priority 100 で「それ以外すべて」を frontend に流す。
     const targetGroup = new elbv2.ApplicationTargetGroup(this, 'FrontendTargetGroup', {
       vpc,
       port: 3000,
@@ -142,10 +138,11 @@ export class FrontendStack extends cdk.Stack {
 
     targetGroup.addTarget(this.frontendService);
 
-    // HTTP Listener
-    this.frontendAlb.addListener('FrontendHttpListener', {
-      port: 80,
-      defaultAction: elbv2.ListenerAction.forward([targetGroup]),
+    new elbv2.ApplicationListenerRule(this, 'FrontendCatchAllRule', {
+      listener: backendHttpListener,
+      priority: 100,
+      conditions: [elbv2.ListenerCondition.pathPatterns(['/*'])],
+      action: elbv2.ListenerAction.forward([targetGroup]),
     });
 
     // Auto Scaling
@@ -160,41 +157,52 @@ export class FrontendStack extends cdk.Stack {
       scaleOutCooldown: cdk.Duration.seconds(60),
     });
 
-    // CloudFront Distribution
-    const backendOrigin = new origins.HttpOrigin(backendAlb.loadBalancerDnsName, {
-      protocolPolicy: cloudfront.OriginProtocolPolicy.HTTP_ONLY,
-    });
+    // #13 ②: 夜間・休日の自動停止でコスト削減（backend と同じスケジュール）。
+    // 平日 startHourJst にタスク 1〜max、endHourJst に 0。timeZone 指定で cron は JST 解釈。
+    const offHours = config.offHoursSchedule;
+    if (offHours?.enabled) {
+      scaling.scaleOnSchedule('StartBusinessHours', {
+        schedule: appscaling.Schedule.cron({
+          weekDay: 'MON-FRI',
+          hour: String(offHours.startHourJst),
+          minute: '0',
+        }),
+        timeZone: cdk.TimeZone.ASIA_TOKYO,
+        minCapacity: 1,
+        maxCapacity: 3,
+      });
+      scaling.scaleOnSchedule('StopOutsideBusinessHours', {
+        schedule: appscaling.Schedule.cron({
+          weekDay: 'MON-FRI',
+          hour: String(offHours.endHourJst),
+          minute: '0',
+        }),
+        timeZone: cdk.TimeZone.ASIA_TOKYO,
+        minCapacity: 0,
+        maxCapacity: 0,
+      });
+    }
 
-    const frontendOrigin = new origins.HttpOrigin(this.frontendAlb.loadBalancerDnsName, {
+    // CloudFront Distribution
+    // #13 ③: オリジンは共有 ALB 1 個のみ。/api 系は ALB のリスナールールで backend へ
+    // 振り分けられるため、CloudFront 側で backend/frontend を分ける behavior は不要。
+    // 静的アセット (/_next/static/*) だけエッジキャッシュを効かせる。
+    const albOrigin = new origins.HttpOrigin(backendAlb.loadBalancerDnsName, {
       protocolPolicy: cloudfront.OriginProtocolPolicy.HTTP_ONLY,
     });
 
     this.distribution = new cloudfront.Distribution(this, 'Distribution', {
       comment: 'Komine Cemetery CRM',
       defaultBehavior: {
-        origin: frontendOrigin,
+        origin: albOrigin,
         viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
         cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
         originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER,
         allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
       },
       additionalBehaviors: {
-        '/api/*': {
-          origin: backendOrigin,
-          viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
-          cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
-          originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER,
-          allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
-        },
-        '/api-docs*': {
-          origin: backendOrigin,
-          viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
-          cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
-          originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER,
-          allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
-        },
         '/_next/static/*': {
-          origin: frontendOrigin,
+          origin: albOrigin,
           viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
           cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
           allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD,
@@ -205,11 +213,6 @@ export class FrontendStack extends cdk.Stack {
     });
 
     // Outputs
-    new cdk.CfnOutput(this, 'FrontendAlbDnsName', {
-      value: this.frontendAlb.loadBalancerDnsName,
-      description: 'Frontend ALB DNS name',
-    });
-
     new cdk.CfnOutput(this, 'CloudFrontDomainName', {
       value: this.distribution.distributionDomainName,
       description: 'CloudFront distribution domain name',

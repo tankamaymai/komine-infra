@@ -9,6 +9,7 @@ import { CicdStack } from '../lib/cicd-stack';
 import { SecurityStack } from '../lib/security-stack';
 import { SecretsRotationStack } from '../lib/secrets-rotation-stack';
 import { CostStack } from '../lib/cost-stack';
+import { OffHoursSchedulerStack } from '../lib/off-hours-scheduler-stack';
 import {
   BackupStack,
   BackupSecondaryVaultStack,
@@ -59,8 +60,9 @@ const frontendStack = new FrontendStack(app, 'KomineFrontendStack', {
   vpc: vpcStack.vpc,
   ecsCluster: backendStack.ecsCluster,
   frontendSecurityGroup: vpcStack.frontendSecurityGroup,
-  albSecurityGroup: vpcStack.albSecurityGroup,
+  // #13 ③: ALB は backend と共有。専用 ALB は廃止し、共有リスナーに frontend ルートを追加。
   backendAlb: backendStack.alb,
+  backendHttpListener: backendStack.httpListener,
 });
 frontendStack.addDependency(vpcStack);
 frontendStack.addDependency(backendStack);
@@ -124,5 +126,15 @@ secretsRotationStack.addDependency(databaseStack);
 // Phase 8: Cost guardrail (AWS Budgets 月額予算 + アラート)
 // account-level リソースのため他 stack への依存は無し。
 new CostStack(app, 'KomineCostStack', { env, config: prodConfig });
+
+// Phase 9: Off-hours scheduler (#13 ②: 夜間・休日に RDS を自動停止)
+// Fargate 側は backend/frontend stack の scheduled scaling で 0 にスケール。
+// offHoursSchedule.enabled=false のときは中身を作らない（空 stack）。
+const offHoursSchedulerStack = new OffHoursSchedulerStack(app, 'KomineOffHoursSchedulerStack', {
+  env,
+  config: prodConfig,
+  databaseInstance: databaseStack.databaseInstance,
+});
+offHoursSchedulerStack.addDependency(databaseStack);
 
 app.synth();

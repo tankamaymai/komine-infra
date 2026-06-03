@@ -191,3 +191,32 @@ describe('DatabaseStack', () => {
     });
   });
 });
+
+describe('DatabaseStack off-hours windows (#13 ②)', () => {
+  test('moves backup/maintenance windows into business hours when off-hours stop is enabled', () => {
+    const app = new cdk.App();
+    const env = { account: testConfig.account, region: testConfig.region };
+    const vpcStack = new cdk.Stack(app, 'OffHoursDbVpcStack', { env });
+    const vpc = new ec2.Vpc(vpcStack, 'Vpc', { maxAzs: 2 });
+    const sg = new ec2.SecurityGroup(vpcStack, 'DbSg', { vpc, description: 'Test DB SG' });
+
+    const stack = new DatabaseStack(app, 'OffHoursDatabaseStack', {
+      env,
+      config: {
+        ...testConfig,
+        dbMultiAz: false,
+        offHoursSchedule: { enabled: true, startHourJst: 8, endHourJst: 20 },
+      },
+      vpc,
+      databaseSecurityGroup: sg,
+    });
+    const template = Template.fromStack(stack);
+    template.hasResourceProperties('AWS::RDS::DBInstance', {
+      MultiAZ: false,
+      // JST 18:00-18:30 (業務終了前, DB 稼働中)
+      PreferredBackupWindow: '09:00-09:30',
+      // 月 13:00-14:00 JST (平日業務時間内, DB 稼働中)
+      PreferredMaintenanceWindow: 'mon:04:00-mon:05:00',
+    });
+  });
+});

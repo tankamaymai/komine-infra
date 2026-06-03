@@ -105,30 +105,61 @@ npx cdk deploy KomineCostStack
 
 ---
 
-## 5. 要 業務/運用判断（未実施・本 issue に残す項目）
+## 5. 最適化レバーの意思決定状況
 
-以下は**コストと可用性/運用のトレードオフ判断が必要**なため、本 PR では実装せず方針決定待ち:
+業務担当の判断を得て、シナリオ **C 寄り**（HA 緩和 + 全スケジュール停止 + ALB 統合）で進める。
+判断と実装状況は以下のとおり:
 
-| 項目 | 必要な判断 | 効果の目安 |
-|---|---|---|
-| HA 方針（シナリオ A〜D の選択） | AZ 障害で数十分のサービス断を許容するか（Multi-AZ 維持 or Single-AZ + Stop/Start） | -$11〜25/月 |
-| Fargate スケジュール scaling | **業務時間外（夜間・休日）にアプリを停止してよいか** | -$13〜15/月 |
-| ALB 2個 → 1個 統合 | CloudFront オリジン書き換えのアーキ変更を許容するか | -$18/月 |
-| Savings Plans / RI 購入 | 1 年コミットの前払い購入をするか | RDS/Fargate -20〜30% |
-| RDS インスタンス right-size | 実負荷を見て `t4g.micro` 維持か変更か | 小 |
+| レバー | 判断 | 状態 | 効果の目安 |
+|---|---|---|---|
+| ① HA 方針（Single-AZ 化） | **Single-AZ 採用**（AZ 障害時の一時停止を許容） | ✅ 実装（`dbMultiAz=false`） | -$17/月 |
+| ② 夜間・休日の自動停止（Fargate + RDS） | **停止する**（業務時間外はアプリ・DB を落とす） | ✅ 実装（`offHoursSchedule`） | -$15〜24/月 |
+| ③ ALB 2個 → 1個 統合 | **統合する**（クローズド運用で影響低） | ✅ 実装（共有 ALB + path ルーティング） | -$18/月 |
+| NAT コスト削減 | **検討中**（NAT インスタンスは EC2 保守を嫌い保留） | ⏳ 保留 | -$30〜40/月 |
+| Savings Plans / RI 購入 | スケジュール停止で稼働が減るため**不要寄り** | — 見送り | RDS/Fargate -20〜30% |
+| RDS インスタンス right-size | 本番メトリクス取得後に評価 | ⏳ 後日 | 小 |
 
-### 自動で実施しなかった理由
+### ②の実装メモ（夜間・休日停止）
 
-- いずれも「HA を犠牲にする」か「業務時間外のアプリ停止」「アーキ変更」「購入コミット」を伴い、
-  業務側・運用側の合意が前提。`#13` の方針が確定したら実装 PR を起こす。
-- 一方、**AWS Budgets 予算アラート**（§4）と**本試算ドキュメント**（§1–3）は HA に中立で
-  業務判断不要のため先行投入した。
+- **Fargate**: backend/frontend の ECS Application Auto Scaling scheduled action で、
+  平日 `8:00 JST` に 1〜3 タスク、`20:00 JST` に 0 タスク（`Asia/Tokyo` 指定）。
+  金曜 20:00 に 0 → 土日そのまま → 月曜 8:00 に復帰。
+- **RDS**: `KomineOffHoursSchedulerStack`（EventBridge Scheduler + 軽量 Lambda）で
+  平日 `7:45 JST` 起動 / `20:15 JST` 停止。RDS は起動に数分かかるため業務開始の少し前に起こす。
+  保守レス優先で EC2 ではなく Lambda を採用。
+- **Single-AZ 必須**: Multi-AZ の RDS は停止できないため、`dbMultiAz=true` と
+  `offHoursSchedule.enabled=true` は両立しない（scheduler stack が synth 時にエラーで弾く）。
+- **バックアップ/メンテ窓の移動**: 停止中は自動バックアップ・メンテが走らないため、
+  `offHoursSchedule` 有効時は窓を業務時間内（DB 稼働中）へ寄せる:
+  - RDS 自動バックアップ: JST 02:00-03:00 → **18:00-18:30**（業務終了前）
+  - RDS メンテ: 月 03:00-04:00 JST → **月 13:00-14:00 JST**（平日業務時間内）
+  - AWS Backup（#8）: 02:30 JST 毎日 → **18:30 JST 平日のみ**（DB 稼働中・データ変更後）
+  > データは業務時間内のみ変化するので、終業前にバックアップを取れば PITR 上も十分。
+- **既知の相互作用**: Secrets Manager の DB 認証情報ローテーション（#18, 30日周期）が
+  夜間に走ると DB 停止中で失敗しうるが、リトライで次の稼働時間に成功する。問題が出れば
+  ローテーション時刻を業務時間内に固定する。
+
+### ③の実装メモ（ALB 統合）
+
+- BackendStack の ALB（`komine-crm-alb`）を共有 ALB とし、専用の frontend ALB は廃止。
+- 共有リスナー（HTTP:80）のルーティング:
+  - `/api/*`（priority 10）・`/api-docs*`（priority 20）→ backend TG（BackendStack）
+  - `/*`（priority 100, catch-all）→ frontend TG（FrontendStack が共有リスナーへ追加）
+- CloudFront はオリジン 1 個（共有 ALB）に簡素化。`/api` の振り分けは ALB 側で行う。
+  静的アセット（`/_next/static/*`）のみエッジキャッシュを維持。
+- 可用性は不変（ALB は AWS 内部で複数 AZ 冗長）。クローズド運用で共有による影響は低。
+
+### 残・保留
+
+- **NAT** は NAT インスタンス（fck-nat, 月$3〜4・固定IP）が最有力だが、EC2 の OS 保守を
+  避けたいとの方針で保留。NAT GW の IP は外向き送信元専用で、ユーザーの名前解決には無関係
+  （現状 IP 固定に依存する外部連携も無し）。再開時は別 issue で扱う。
 
 ---
 
 ## 関連 issue
 
-- `#7` Multi-AZ（PR #15）: シナリオ B/C/D 採用時は `prodConfig.dbMultiAz = false` 化が必要
-- `#8` バックアップ強化: シナリオ D は Aurora が自動カバー
+- `#7` Multi-AZ（PR #15）: #13 ① で方針見直し → `dbMultiAz=false`（Single-AZ）に変更
+- `#8` バックアップ強化: #13 ② の停止運用に合わせて窓を業務時間内へ移動
 - `#9` WAF: +$8〜12/月 / `#10` HTTPS: ACM 無料 / `#11` 堅牢化: +$1〜2/月 / `#12` 監視: +$2〜3/月
 - `#14` 本番化トラッキング（親）

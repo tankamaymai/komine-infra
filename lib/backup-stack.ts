@@ -92,20 +92,23 @@ export class BackupStack extends cdk.Stack {
         ]
       : [];
 
+    // #13 ②: offHoursSchedule 有効時は RDS が夜間・休日停止する。停止中スナップショットを
+    // 避けるため、AWS Backup も DB 稼働中（平日業務時間内）に走らせる。
+    // - 通常(24/7): RDS preferredBackupWindow (17:00-18:00 UTC = JST 02:00-03:00) 内で開始。
+    // - offHours: JST 18:30（= 09:30 UTC）の平日に実行（RDS 自動バックアップ窓 18:00-18:30 の直後、
+    //   RDS 停止 20:15 JST より前）。土日はデータ変更が無い（DB 停止）ので実行しない。
+    const offHoursEnabled = config.offHoursSchedule?.enabled ?? false;
+    const backupSchedule = offHoursEnabled
+      ? events.Schedule.cron({ minute: '30', hour: '9', weekDay: 'MON-FRI' })
+      : events.Schedule.cron({ minute: '30', hour: '17', day: '*', month: '*', year: '*' });
+
     this.backupPlan = new backup.BackupPlan(this, 'Plan', {
       backupPlanName: 'komine-crm-rds-daily',
       backupVault: this.backupVault,
       backupPlanRules: [
         new backup.BackupPlanRule({
           ruleName: 'daily-30day',
-          // RDS preferredBackupWindow (17:00-18:00 UTC) の中で開始
-          scheduleExpression: events.Schedule.cron({
-            minute: '30',
-            hour: '17',
-            day: '*',
-            month: '*',
-            year: '*',
-          }),
+          scheduleExpression: backupSchedule,
           // 想定遅延 1h、想定完了 2h
           startWindow: cdk.Duration.hours(1),
           completionWindow: cdk.Duration.hours(2),

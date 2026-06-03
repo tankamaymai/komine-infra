@@ -35,6 +35,11 @@ export class BackendStack extends cdk.Stack {
   public readonly ecsCluster: ecs.Cluster;
   public readonly backendService: ecs.FargateService;
   public readonly alb: elbv2.ApplicationLoadBalancer;
+  /**
+   * 共有 ALB の HTTP リスナー (#13 ③)。ALB を 1 個に集約するため、FrontendStack が
+   * このリスナーに catch-all ルール（/* → frontend）を追加する。
+   */
+  public readonly httpListener: elbv2.ApplicationListener;
   /** ECS task role (#11: PassRole 制限のため CicdStack に渡す) */
   public readonly taskRole: iam.IRole;
   /** ECS task execution role (#11: PassRole 制限のため CicdStack に渡す) */
@@ -200,9 +205,24 @@ export class BackendStack extends cdk.Stack {
     targetGroup.addTarget(this.backendService);
 
     // HTTP Listener (redirect to HTTPS when certificate is available)
-    this.alb.addListener('HttpListener', {
+    // #13 ③: この ALB を frontend と共有する。default は backend に向けつつ、
+    // /api/* と /api-docs* を明示ルールで backend へ。frontend の catch-all (/*) は
+    // FrontendStack が priority 100 で追加する（/api 系より低優先度なので非 /api のみ拾う）。
+    this.httpListener = this.alb.addListener('HttpListener', {
       port: 80,
       defaultAction: elbv2.ListenerAction.forward([targetGroup]),
+    });
+
+    this.httpListener.addAction('ApiRoute', {
+      priority: 10,
+      conditions: [elbv2.ListenerCondition.pathPatterns(['/api/*'])],
+      action: elbv2.ListenerAction.forward([targetGroup]),
+    });
+
+    this.httpListener.addAction('ApiDocsRoute', {
+      priority: 20,
+      conditions: [elbv2.ListenerCondition.pathPatterns(['/api-docs*'])],
+      action: elbv2.ListenerAction.forward([targetGroup]),
     });
 
     // Auto Scaling
@@ -216,6 +236,34 @@ export class BackendStack extends cdk.Stack {
       scaleInCooldown: cdk.Duration.seconds(300),
       scaleOutCooldown: cdk.Duration.seconds(60),
     });
+
+    // #13 ②: 夜間・休日の自動停止でコスト削減。平日 startHourJst にタスク 1〜max、
+    // endHourJst に 0 へスケール。金曜 20:00 に 0 → 土日そのまま → 月曜 8:00 に復帰。
+    // timeZone を指定するので cron は JST 解釈。CPU target tracking とは scheduled action
+    // が min/max を上書きする形で共存する（業務時間外は max=0 で強制 0）。
+    const offHours = config.offHoursSchedule;
+    if (offHours?.enabled) {
+      scaling.scaleOnSchedule('StartBusinessHours', {
+        schedule: appscaling.Schedule.cron({
+          weekDay: 'MON-FRI',
+          hour: String(offHours.startHourJst),
+          minute: '0',
+        }),
+        timeZone: cdk.TimeZone.ASIA_TOKYO,
+        minCapacity: 1,
+        maxCapacity: 3,
+      });
+      scaling.scaleOnSchedule('StopOutsideBusinessHours', {
+        schedule: appscaling.Schedule.cron({
+          weekDay: 'MON-FRI',
+          hour: String(offHours.endHourJst),
+          minute: '0',
+        }),
+        timeZone: cdk.TimeZone.ASIA_TOKYO,
+        minCapacity: 0,
+        maxCapacity: 0,
+      });
+    }
 
     // Outputs
     new cdk.CfnOutput(this, 'AlbDnsName', {

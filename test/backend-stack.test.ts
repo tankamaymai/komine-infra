@@ -213,6 +213,27 @@ describe('BackendStack', () => {
     });
   });
 
+  test('routes /api/* and /api-docs* to backend on the shared listener (#13 ③)', () => {
+    template.hasResourceProperties('AWS::ElasticLoadBalancingV2::ListenerRule', {
+      Priority: 10,
+      Conditions: Match.arrayWith([
+        Match.objectLike({
+          Field: 'path-pattern',
+          PathPatternConfig: Match.objectLike({ Values: ['/api/*'] }),
+        }),
+      ]),
+    });
+    template.hasResourceProperties('AWS::ElasticLoadBalancingV2::ListenerRule', {
+      Priority: 20,
+      Conditions: Match.arrayWith([
+        Match.objectLike({
+          Field: 'path-pattern',
+          PathPatternConfig: Match.objectLike({ Values: ['/api-docs*'] }),
+        }),
+      ]),
+    });
+  });
+
   test('configures auto scaling with min 1 and max 3', () => {
     template.hasResourceProperties('AWS::ApplicationAutoScaling::ScalableTarget', {
       MinCapacity: 1,
@@ -426,6 +447,58 @@ describe('BackendStack Supabase auth injection (#20)', () => {
           }),
         ]),
       }),
+    });
+  });
+});
+
+describe('BackendStack off-hours scheduling (#13 ②)', () => {
+  let template: Template;
+
+  beforeAll(() => {
+    const app = new cdk.App();
+    const env = { account: testConfig.account, region: testConfig.region };
+    const depStack = new cdk.Stack(app, 'DepStack', { env });
+    const vpc = new ec2.Vpc(depStack, 'Vpc', { maxAzs: 2 });
+    const albSg = new ec2.SecurityGroup(depStack, 'AlbSg', { vpc, description: 'ALB SG' });
+    const backendSg = new ec2.SecurityGroup(depStack, 'BackendSg', { vpc, description: 'Backend SG' });
+    const secret = new secretsmanager.Secret(depStack, 'DbSecret', {
+      secretObjectValue: {
+        host: cdk.SecretValue.unsafePlainText('localhost'),
+        port: cdk.SecretValue.unsafePlainText('5432'),
+        username: cdk.SecretValue.unsafePlainText('admin'),
+        password: cdk.SecretValue.unsafePlainText('password'),
+        dbname: cdk.SecretValue.unsafePlainText('testdb'),
+      },
+    });
+    const bucket = new s3.Bucket(depStack, 'DocsBucket');
+    const stack = new BackendStack(app, 'OffHoursBackendStack', {
+      env,
+      config: { ...testConfig, offHoursSchedule: { enabled: true, startHourJst: 8, endHourJst: 20 } },
+      vpc,
+      albSecurityGroup: albSg,
+      backendSecurityGroup: backendSg,
+      databaseSecret: secret,
+      documentsBucket: bucket,
+    });
+    template = Template.fromStack(stack);
+  });
+
+  test('adds scheduled scale-up at 08:00 and scale-to-zero at 20:00 JST on weekdays', () => {
+    template.hasResourceProperties('AWS::ApplicationAutoScaling::ScalableTarget', {
+      ScheduledActions: Match.arrayWith([
+        Match.objectLike({
+          ScheduledActionName: 'StartBusinessHours',
+          Schedule: 'cron(0 8 ? * MON-FRI *)',
+          Timezone: 'Asia/Tokyo',
+          ScalableTargetAction: Match.objectLike({ MinCapacity: 1, MaxCapacity: 3 }),
+        }),
+        Match.objectLike({
+          ScheduledActionName: 'StopOutsideBusinessHours',
+          Schedule: 'cron(0 20 ? * MON-FRI *)',
+          Timezone: 'Asia/Tokyo',
+          ScalableTargetAction: Match.objectLike({ MinCapacity: 0, MaxCapacity: 0 }),
+        }),
+      ]),
     });
   });
 });

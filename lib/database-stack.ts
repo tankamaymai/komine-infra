@@ -40,6 +40,18 @@ export class DatabaseStack extends cdk.Stack {
 
     const { config, vpc, databaseSecurityGroup, secretsRotationSecurityGroup } = props;
 
+    // #13 ②: offHoursSchedule 有効時は RDS が夜間・休日停止するため、停止中に当たる
+    // バックアップ/メンテ窓では処理が走らない（自動バックアップもメンテも skip/defer）。
+    // 窓を業務時間内（DB 稼働中）へ寄せる。日中は変更が業務時間内のみ発生するので、
+    // 業務終了直前にバックアップを取れば PITR 上も十分。
+    const offHoursEnabled = config.offHoursSchedule?.enabled ?? false;
+    // 自動バックアップ窓（UTC, 30 分以上）。通常は config.dbPreferredBackupWindow（JST 02:00-03:00）。
+    // 停止運用時は JST 18:00-18:30（= 09:00-09:30 UTC、業務終了前で DB 稼働中）。
+    const backupWindow = offHoursEnabled ? '09:00-09:30' : config.dbPreferredBackupWindow;
+    // メンテ窓（UTC）。通常は月 03:00-04:00 JST。停止運用時は月 13:00-14:00 JST
+    // （= mon:04:00-mon:05:00 UTC、平日業務時間内で DB 稼働中）。backup 窓と非重複。
+    const maintenanceWindow = offHoursEnabled ? 'mon:04:00-mon:05:00' : 'sun:18:00-sun:19:00';
+
     // Subnet group for RDS (Private Subnets)
     const subnetGroup = new rds.SubnetGroup(this, 'SubnetGroup', {
       vpc,
@@ -64,19 +76,20 @@ export class DatabaseStack extends cdk.Stack {
       allocatedStorage: config.dbAllocatedStorage,
       maxAllocatedStorage: config.dbAllocatedStorage * 2,
       storageType: rds.StorageType.GP3,
-      // #7: HA 最優先方針。config.dbMultiAz で切替可だが本番は常に true。
+      // #13 ②: Single-AZ（config.dbMultiAz=false）。RDS を停止可能にして夜間・休日の
+      // 自動停止でコストを削減する。元の HA 最優先（Multi-AZ）方針は #7。
       multiAz: config.dbMultiAz,
-      // メンテナンス窓は UTC 指定。`sun:18:00-sun:19:00 UTC` = 月曜 03:00-04:00 JST
-      // （霊園の業務時間外・最オフピーク帯）。
-      preferredMaintenanceWindow: 'sun:18:00-sun:19:00',
+      // メンテナンス窓（UTC）。offHours 運用時は DB 稼働中（業務時間内）の窓に切替。
+      // 通常: sun:18:00-19:00 UTC = 月 03:00-04:00 JST。offHours: mon:04:00-05:00 UTC = 月 13:00-14:00 JST。
+      preferredMaintenanceWindow: maintenanceWindow,
       // #8: バックアップ強化。
       // - 保持: config.dbBackupRetentionDays（本番 30 日）。PITR もこの期間内で可能。
-      // - window: config.dbPreferredBackupWindow（17:00-18:00 UTC = JST 02:00-03:00）。
-      //   maintenance 窓 (sun:18:00-sun:19:00 UTC) と非重複に設定。
+      // - window: 通常は config.dbPreferredBackupWindow（JST 02:00-03:00）。offHours 運用時は
+      //   DB 稼働中の JST 18:00-18:30 に切替（停止中だと自動バックアップが走らないため）。
       // - copyTagsToSnapshot: AWS Backup の tag-based 選択と整合させるため true。
       // - deleteAutomatedBackups: false にして instance 削除後も保持期間中は復旧可能に。
       backupRetention: cdk.Duration.days(config.dbBackupRetentionDays),
-      preferredBackupWindow: config.dbPreferredBackupWindow,
+      preferredBackupWindow: backupWindow,
       copyTagsToSnapshot: true,
       deleteAutomatedBackups: false,
       deletionProtection: true,

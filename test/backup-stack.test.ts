@@ -190,3 +190,29 @@ describe('BackupStack honors custom retention values', () => {
     });
   });
 });
+
+describe('BackupStack off-hours schedule (#13 ②)', () => {
+  test('runs the daily backup during business hours on weekdays when off-hours stop is enabled', () => {
+    const app = new cdk.App();
+    const stack = new BackupStack(app, 'OffHoursBackupStack', {
+      env: { account: testConfig.account, region: testConfig.region },
+      config: {
+        ...testConfig,
+        offHoursSchedule: { enabled: true, startHourJst: 8, endHourJst: 20 },
+      },
+      crossRegionVaultArn,
+    });
+    const template = Template.fromStack(stack);
+    template.hasResourceProperties('AWS::Backup::BackupPlan', {
+      BackupPlan: Match.objectLike({
+        BackupPlanRule: Match.arrayWith([
+          Match.objectLike({
+            RuleName: 'daily-30day',
+            // 18:30 JST = 09:30 UTC, weekdays only (DB 稼働中)
+            ScheduleExpression: 'cron(30 9 ? * MON-FRI *)',
+          }),
+        ]),
+      }),
+    });
+  });
+});
